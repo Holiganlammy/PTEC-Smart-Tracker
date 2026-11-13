@@ -17,6 +17,8 @@ export class ApiError extends Error {
     public status: number, // 0 = เชื่อมต่อไม่ได้ / หมดเวลา
     message: string,
     public body?: unknown,
+    /** request ที่ทำให้เกิด error (ใช้ยิงซ้ำใน interceptor เช่น หลังต่อ token) */
+    public config?: RequestConfig,
   ) {
     super(message);
     this.name = "ApiError";
@@ -38,12 +40,16 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** ยกเลิก request จากภายนอก */
   signal?: AbortSignal;
+  /** true = ไม่ต้องแนบ Authorization และไม่ต้องลองต่อ token เมื่อได้ 401 (ใช้กับ /auth/*) */
+  skipAuth?: boolean;
 }
 
 export interface RequestConfig extends RequestOptions {
   url: string;
   method: HttpMethod;
   body?: unknown;
+  /** ยิงซ้ำหลังต่อ token แล้ว (กันวน) */
+  retried?: boolean;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -116,6 +122,11 @@ export class HttpClient {
 
   /** ยิง request ตาม config (ใช้ซ้ำใน interceptor ได้ เช่น retry หลังต่อ token ใหม่) */
   async send<T>(config: RequestConfig): Promise<T> {
+    return (await this.sendRaw(config)).data as T;
+  }
+
+  /** เหมือน send แต่คืน response เต็ม (ใช้ใน interceptor) */
+  async sendRaw(config: RequestConfig): Promise<HttpResponse> {
     // 1) request interceptors — รันตามลำดับที่ลงทะเบียน
     let cfg = config;
     for (const handler of this.interceptors.request.handlers) {
@@ -127,7 +138,7 @@ export class HttpClient {
     for (const h of this.interceptors.response.handlers) {
       if (h) chain = chain.then(h.onFulfilled, h.onRejected);
     }
-    return (await chain).data as T;
+    return await chain;
   }
 
   private buildUrl(path: string, params?: QueryParams) {
@@ -153,7 +164,7 @@ export class HttpClient {
       Accept: "application/json",
       // FormData ให้เบราว์เซอร์ใส่ Content-Type (พร้อม boundary) เอง
       ...(hasBody && !isForm ? { "Content-Type": "application/json" } : {}),
-      ...this.defaults.headers,
+      ...(config.skipAuth ? {} : this.defaults.headers),
       ...config.headers,
     };
 
@@ -191,7 +202,7 @@ export class HttpClient {
         // NestJS ส่ง message เป็น string หรือ array (จาก ValidationPipe)
         const raw = (data as { message?: string | string[] } | undefined)?.message;
         const message = Array.isArray(raw) ? raw.join(", ") : (raw ?? "เกิดข้อผิดพลาด");
-        throw new ApiError(res.status, message, data);
+        throw new ApiError(res.status, message, data, config);
       }
 
       return { data, status: res.status, headers: res.headers, config };

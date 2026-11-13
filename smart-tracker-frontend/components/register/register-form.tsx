@@ -9,7 +9,7 @@ import { MessageCircleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { ApiError, api, type UserStatus, type Vender } from "@/lib/api";
+import { ApiError, api, type RegisteredMe, type Vender } from "@/lib/api";
 import { DebugTracePanel } from "@/components/debug-trace-panel";
 import {
   MAX_LOADS_PER_WINDOW,
@@ -17,9 +17,9 @@ import {
   resetLoadGuard,
   trace,
 } from "@/lib/debug-trace";
-import { http } from "@/lib/http";
+import { loginWithLine, restoreSession } from "@/lib/auth";
 import { getLineSession, type LineSession } from "@/lib/liff";
-import { ApplicationStatus } from "./application-status";
+import { RegisteredView } from "./registered-view";
 import { BenefitsCard } from "./benefits-card";
 import { VenderCombobox } from "./vender-combobox";
 
@@ -27,7 +27,7 @@ type Stage =
   | { name: "loading" }
   | { name: "error"; message: string }
   | { name: "form" }
-  | { name: "registered"; status: UserStatus; rejectReason: string | null };
+  | { name: "registered"; me: RegisteredMe };
 
 const PHONE_PATTERN = /^0\d{8,9}$/; // ตรงกับ backend (AddUserDto)
 
@@ -72,17 +72,14 @@ export default function RegisterForm() {
         if (!line) return; // กำลังพาไปล็อกอิน LINE
         if (cancelled) return;
         setSession(line);
-        http.setAuthToken(line.idToken); // ทุก request หลังจากนี้ติด Authorization: Bearer ให้เอง
+        // หน้านี้ต้องใช้ชื่อ LINE และ ID Token (ตอนสมัคร) จึงผ่าน LIFF เสมอ แต่ถ้ายังมี session เดิมก็ไม่ต้องล็อกอินระบบซ้ำ
+        if (!(await restoreSession())) await loginWithLine(line.idToken);
 
         const me = await api.getMe();
         if (cancelled) return;
 
         if (me.registered) {
-          setStage({
-            name: "registered",
-            status: me.status,
-            rejectReason: me.rejectReason,
-          });
+          setStage({ name: "registered", me });
           return;
         }
 
@@ -103,26 +100,34 @@ export default function RegisterForm() {
     };
   }, []);
 
+  /** โหลดข้อมูลที่ลงทะเบียนไว้ แล้วแสดงหน้า "คุณลงทะเบียนแล้ว" */
+  const showRegistered = async () => {
+    const me = await api.getMe();
+    if (me.registered) setStage({ name: "registered", me });
+  };
+
   const onSubmit = async (values: RegisterType) => {
     if (!session || !values.vender) return;
 
     setSubmitting(true);
     try {
-      const result = await api.register({
-        idToken: session.idToken,
+      // ID Token ของ LINE อายุสั้น — ขอตัวล่าสุดก่อนส่ง (ถ้าหมดอายุจะพาไปล็อกอิน LINE ใหม่)
+      const line = await getLineSession();
+      if (!line) return;
+      await api.register({
+        idToken: line.idToken,
         fullName: values.fullName,
         phoneNumber: values.phone,
         email: values.email.trim() || undefined,
         venderCode: values.vender.venderCode,
       });
       toast.success("ลงทะเบียนสำเร็จ", { description: "รอผู้ดูแลตรวจสอบและอนุมัติ" });
-      setStage({ name: "registered", status: result.status, rejectReason: null });
+      await showRegistered();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // สมัครไปแล้ว — แสดงสถานะแทน
-        const status = (err.body as { status?: UserStatus } | undefined)?.status ?? "pending";
         toast.info("บัญชี LINE นี้ลงทะเบียนไว้แล้ว");
-        setStage({ name: "registered", status, rejectReason: null });
+        await showRegistered().catch(() => {});
       } else {
         const message = err instanceof Error ? err.message : "ลงทะเบียนไม่สำเร็จ";
         toast.error("ลงทะเบียนไม่สำเร็จ", { description: message });
@@ -152,6 +157,11 @@ export default function RegisterForm() {
         <DebugTracePanel />
       </div>
     );
+  }
+
+  // บัญชี LINE นี้ลงทะเบียนแล้ว → แสดงหน้าสถานะเลย ไม่แสดงฟอร์ม (สมัครซ้ำไม่ได้)
+  if (stage.name === "registered") {
+    return <RegisteredView me={stage.me} />;
   }
 
   return (
@@ -260,10 +270,6 @@ export default function RegisterForm() {
             {submitting ? "กำลังบันทึก…" : "ลงทะเบียน"}
           </Button>
         </form>
-      )}
-
-      {stage.name === "registered" && (
-        <ApplicationStatus status={stage.status} rejectReason={stage.rejectReason} />
       )}
 
       <BenefitsCard />

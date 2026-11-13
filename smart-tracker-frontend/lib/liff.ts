@@ -98,11 +98,87 @@ export async function getLineSession(): Promise<LineSession | null> {
     // ข้าม
   }
 
+  const exp = liff.getDecodedIDToken()?.exp;
+  const secondsLeft = typeof exp === "number" ? exp - Math.floor(Date.now() / 1000) : null;
+
+  // LIFF ยังบอกว่าล็อกอินอยู่ แต่ ID Token ที่เก็บไว้หมดอายุแล้ว (เปิดหน้าต่อจากรอบเก่า) — ห้ามใช้ ต้องล็อกอินใหม่
+  if (secondsLeft !== null && secondsLeft <= MIN_USABLE_SECONDS) {
+    trace(`ID Token ที่เก็บไว้หมดอายุแล้ว (เหลือ ${secondsLeft} วินาที) → ล็อกอินใหม่`);
+    await renewLineLogin(); // โยน error ถ้าทำซ้ำเกินกำหนด (กันวน)
+    return null; // กำลังพาไปล็อกอิน LINE
+  }
+
+  if (secondsLeft !== null && secondsLeft > RENEW_BEFORE_SECONDS) {
+    // ได้ token ใหม่จริง → ล้างตัวนับการต่ออายุ
+    try {
+      localStorage.removeItem(RENEW_ATTEMPTS_KEY);
+    } catch {
+      // ข้าม
+    }
+  }
+
   const profile = await liff.getProfile();
-  trace("ได้ ID Token และโปรไฟล์แล้ว");
+  trace(`ได้ ID Token และโปรไฟล์แล้ว (token เหลือ ${secondsLeft} วินาที)`);
   return {
     idToken,
     displayName: profile.displayName,
     pictureUrl: profile.pictureUrl,
   };
+}
+
+// ───────── ต่ออายุ LINE ID Token ─────────
+
+const RENEW_ATTEMPTS_KEY = "liff-renew-attempts";
+const RENEW_WINDOW_MS = 10 * 60_000;
+const RENEW_MAX_ATTEMPTS = 2;
+/** เริ่มต่ออายุเมื่อ token เหลือน้อยกว่านี้ (วินาที) */
+export const RENEW_BEFORE_SECONDS = 5 * 60;
+/** token ที่เหลือน้อยกว่านี้ (วินาที) ถือว่าใช้ไม่ได้แล้ว — ไม่ส่งไป backend */
+const MIN_USABLE_SECONDS = 30;
+
+/** วินาทีที่ ID Token ปัจจุบันจะหมดอายุ (null = อ่านไม่ได้) */
+export async function getIdTokenSecondsLeft(): Promise<number | null> {
+  const liff = await getLiff();
+  const exp = liff.getDecodedIDToken()?.exp;
+  return typeof exp === "number" ? exp - Math.floor(Date.now() / 1000) : null;
+}
+
+/**
+ * ต่ออายุโดยสั่งล็อกอิน LINE ใหม่ (หน้าจะโหลดใหม่ แล้วได้ ID Token ใหม่)
+ * กันวน: ภายใน 10 นาทีทำได้ไม่เกิน 2 ครั้ง ถ้าเกินจะโยน error (แปลว่าล็อกอินใหม่แล้ว token ก็ไม่ใหม่)
+ */
+export function renewLineLogin(): Promise<void> {
+  // เรียกซ้อนกัน (เช่น React Strict Mode รัน effect 2 รอบ) ให้ใช้ผลเดียวกัน ไม่นับเป็น 2 ครั้ง
+  renewing ??= doRenewLineLogin().finally(() => {
+    renewing = null;
+  });
+  return renewing;
+}
+
+let renewing: Promise<void> | null = null;
+
+async function doRenewLineLogin(): Promise<void> {
+  const liff = await getLiff();
+
+  let recent: number[] = [];
+  try {
+    const all: number[] = JSON.parse(localStorage.getItem(RENEW_ATTEMPTS_KEY) ?? "[]");
+    recent = all.filter((t) => Date.now() - t < RENEW_WINDOW_MS);
+  } catch {
+    // ข้าม
+  }
+  if (recent.length >= RENEW_MAX_ATTEMPTS) {
+    trace("หยุดต่ออายุ: ต่ออายุซ้ำหลายครั้งแต่ token ยังไม่ใหม่");
+    throw new Error("ต่ออายุการเข้าสู่ระบบ LINE ไม่สำเร็จ");
+  }
+  try {
+    localStorage.setItem(RENEW_ATTEMPTS_KEY, JSON.stringify([...recent, Date.now()]));
+  } catch {
+    // ข้าม
+  }
+
+  trace(`ต่ออายุ token: สั่ง liff.login() (เหลือ ${await getIdTokenSecondsLeft()} วินาที)`);
+  // liff.login() อย่างเดียวตอนที่ล็อกอินอยู่แล้วไม่ออก token ใหม่ (token เดิมถูกเก็บซ้ำ) — ต้องล้างของเดิมก่อน
+  if (liff.isLoggedIn()) liff.logout();
+  liff.login({ redirectUri: location.href });
 }

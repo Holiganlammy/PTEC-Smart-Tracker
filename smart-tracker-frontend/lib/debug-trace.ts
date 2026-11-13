@@ -46,6 +46,7 @@ export function resetLoadGuard() {
   try {
     localStorage.removeItem(LOADS_KEY);
     localStorage.removeItem("liff-login-attempts");
+    localStorage.removeItem("liff-renew-attempts");
   } catch {
     // ข้าม
   }

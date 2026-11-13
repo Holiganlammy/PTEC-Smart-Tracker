@@ -23,7 +23,7 @@ type Props = {
 
 /** เลือกบริษัทผู้รับเหมา (Vendor) — พิมพ์ค้นหาได้ */
 export function VenderCombobox({ venders, value, onChange, disabled, invalid }: Props) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(value?.venderName ?? ""); // ให้ช่องแสดงบริษัทที่เลือกไว้แล้ว (หน้าแก้ไข)
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

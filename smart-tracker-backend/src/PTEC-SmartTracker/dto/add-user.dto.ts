@@ -1,4 +1,11 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 /** Body ของ POST /users/register (หน้าลงทะเบียนผู้รับเหมา) */
 export class AddUserDto {
@@ -13,7 +20,9 @@ export class AddUserDto {
   @MaxLength(200)
   fullName: string;
 
-  @Matches(/^0\d{8,9}$/, { message: 'เบอร์โทรต้องเป็นตัวเลข 9-10 หลัก ขึ้นต้นด้วย 0' })
+  @Matches(/^0\d{8,9}$/, {
+    message: 'เบอร์โทรต้องเป็นตัวเลข 9-10 หลัก ขึ้นต้นด้วย 0',
+  })
   phoneNumber: string;
 
   @IsOptional()

@@ -1,6 +1,14 @@
-import { redirect } from "next/navigation";
+import type { Metadata } from "next";
+import { HomeDashboard } from "@/components/home/home-dashboard";
+import { PortalShell } from "@/components/portal-shell";
 
-// ตอนนี้มีหน้าเดียวคือลงทะเบียน — ภายหลังจะเช็กสถานะผู้ใช้แล้วพาไป dashboard
+export const metadata: Metadata = { title: "หน้าหลัก | PTEC" };
+
+// หน้าหลัก: เช็กสถานะผู้ใช้ — ยังไม่ลงทะเบียน/ยังไม่อนุมัติ จะพาไป /register
 export default function Home() {
-  redirect("/register");
+  return (
+    <PortalShell title="หน้าหลัก">
+      <HomeDashboard />
+    </PortalShell>
+  );
 }

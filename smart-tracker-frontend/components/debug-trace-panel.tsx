@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { clearTrace, readTrace } from "@/lib/debug-trace";
 
 /** แสดงบันทึกขั้นตอน (ไม่มีค่าลับ) ใช้ตอนวินิจฉัยบนมือถือ */
@@ -21,16 +22,17 @@ export function DebugTracePanel() {
       <pre className="mt-2 max-h-64 overflow-auto font-mono leading-relaxed break-all whitespace-pre-wrap">
         {lines.join("\n")}
       </pre>
-      <button
-        type="button"
-        className="mt-2 underline"
+      <Button
+        variant="link"
+        size="sm"
+        className="mt-2 h-auto p-0 text-xs underline"
         onClick={() => {
           clearTrace();
           setLines([]);
         }}
       >
         ล้างบันทึก
-      </button>
+      </Button>
     </details>
   );
 }

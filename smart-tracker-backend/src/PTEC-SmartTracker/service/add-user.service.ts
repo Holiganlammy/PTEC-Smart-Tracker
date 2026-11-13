@@ -2,10 +2,10 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AddUserDto } from '../dto/add-user.dto';
+import { RoleId } from '../model/role.model';
 import { User } from '../model/user.model';
 import { LineAuthService } from './line-auth.service';
 
-/** ลงทะเบียนผู้ใช้ใหม่ (สถานะ "รอ OPS ตรวจสอบ") */
 @Injectable()
 export class AddUserService {
   constructor(
@@ -40,7 +40,7 @@ export class AddUserService {
         phoneNumber: dto.phoneNumber,
         email: dto.email ?? null,
         venderCode: dto.venderCode,
-        role: 'contractor',
+        roleId: RoleId.CONTRACTOR,
         status: 'pending',
       }),
     );
