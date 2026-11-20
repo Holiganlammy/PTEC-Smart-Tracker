@@ -1,11 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-
-export interface LineProfile {
-  userId: string;
-  displayName: string | null;
-  pictureUrl: string | null;
-}
+import type { LineProfile } from '../type/auth.type';
 
 /** ตรวจ LIFF ID Token กับ LINE (client_id = Channel ID ของ MINI App channel) */
 @Injectable()

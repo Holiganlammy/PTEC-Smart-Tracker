@@ -16,10 +16,11 @@ import {
   SetActiveDto,
   UpdateUserDto,
 } from '../dto/admin-user.dto';
-import { JwtAuthGuard, type AuthedRequest } from '../guard/jwt-auth.guard';
+import { JwtAuthGuard } from '../guard/jwt-auth.guard';
 import { Roles, RolesGuard } from '../guard/roles.guard';
 import { RoleId } from '../model/role.model';
 import { UserService } from '../service/user.service';
+import type { AuthedRequest } from '../type/auth.type';
 
 /** endpoint ทั้งหมดที่เกี่ยวกับผู้ใช้ — /users/... */
 @Controller('users')
@@ -37,6 +38,14 @@ export class UserController {
   @Get('me')
   me(@Req() req: AuthedRequest) {
     return this.userService.getMe(req.currentUser);
+  }
+
+  /** GET /users/subs → [{ id, name }] ผู้รับเหมาช่วงในบริษัทเดียวกัน (ไว้เลือกมอบหมายงาน) */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleId.CONTRACTOR, RoleId.HEAD)
+  @Get('subs')
+  subs(@Req() req: AuthedRequest) {
+    return this.userService.listSubContractors(req.currentUser!);
   }
 
   // ───────── แอดมิน (JwtAuthGuard + role admin) ─────────

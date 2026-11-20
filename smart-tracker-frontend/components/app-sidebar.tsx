@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BookOpenIcon,
+  ClipboardCheckIcon,
   ClipboardListIcon,
   HomeIcon,
   MapPinIcon,
@@ -42,13 +43,14 @@ type NavItem = {
 
 const MAIN_MENU: NavItem[] = [
   { label: "หน้าหลัก", href: "/", Icon: HomeIcon, ready: true },
-  { label: "รายการงาน", href: "/jobs", Icon: ClipboardListIcon, ready: false },
+  { label: "รายการงาน", href: "/jobs", Icon: ClipboardListIcon, ready: true },
   { label: "ติดตามงาน", href: "/tracking", Icon: MapPinIcon, ready: false },
   { label: "คะแนนของฉัน", href: "/score", Icon: StarIcon, ready: false },
   { label: "คู่มือการใช้งาน", href: "/guide", Icon: BookOpenIcon, ready: false },
 ];
 
 const ADMIN_MENU: NavItem[] = [
+  { label: "ตรวจงานจาก OPS", href: "/admin/jobs", Icon: ClipboardCheckIcon, ready: true },
   { label: "อนุมัติผู้ใช้", href: "/admin/users", Icon: UserCheckIcon, ready: true },
   { label: "จัดการผู้ใช้", href: "/admin/users/manage", Icon: UsersIcon, ready: true },
 ];

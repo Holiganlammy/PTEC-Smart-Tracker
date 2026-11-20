@@ -10,6 +10,7 @@ import { AddUserDto } from '../dto/add-user.dto';
 import { ListUsersQuery, UpdateUserDto } from '../dto/admin-user.dto';
 import { Role, RoleId } from '../model/role.model';
 import { User } from '../model/user.model';
+import type { SubContractorItem } from '../type/user.type';
 import { LineAuthService } from './line-auth.service';
 import { VenderService } from './vender.service';
 
@@ -143,6 +144,24 @@ export class UserService {
       rejectReason: u.rejectReason,
       approvedAt: u.approvedAt,
       createdAt: u.createdAt,
+    }));
+  }
+
+  /** ผู้รับเหมาช่วงที่ใช้งานได้ในบริษัทเดียวกับผู้ใช้ (ให้หัวหน้า/ผู้รับเหมาเลือกมอบหมายงาน) */
+  async listSubContractors(user: User): Promise<SubContractorItem[]> {
+    if (!user.venderCode) return [];
+    const subs = await this.users.find({
+      where: {
+        venderCode: user.venderCode,
+        roleId: RoleId.SUB_CONTRACTOR,
+        status: 'approved',
+        active: true,
+      },
+      order: { firstName: 'ASC' },
+    });
+    return subs.map((u) => ({
+      id: u.id,
+      name: [u.firstName, u.lastName].filter(Boolean).join(' '),
     }));
   }
 

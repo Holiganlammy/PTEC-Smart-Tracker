@@ -3,8 +3,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 import {
   ChevronRightIcon,
   ClipboardCheckIcon,
@@ -18,50 +16,11 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { RoleId, api, type RegisteredMe } from "@/lib/api";
-import { ensureSession } from "@/lib/auth";
-
-type Gate =
-  | { name: "loading" }
-  | { name: "error"; message: string }
-  | { name: "ready"; me: RegisteredMe };
+import { useMemberGate } from "@/lib/use-member-gate";
 
 /** หน้าหลัก: เช็กสถานะก่อน — ยังไม่ลงทะเบียน/ยังไม่อนุมัติ จะพาไปหน้า /register */
 export function HomeDashboard() {
-  const router = useRouter();
-  const [gate, setGate] = useState<Gate>({ name: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        if (!(await ensureSession()) || cancelled) return; // false = กำลังพาไปล็อกอิน LINE
-
-        const me = await api.getMe();
-        if (cancelled) return;
-
-        if (!me.registered) {
-          toast.warning("ยังไม่ได้ลงทะเบียน", {
-            description: "กรุณาลงทะเบียนก่อนเริ่มใช้งานระบบ",
-          });
-          router.replace("/register");
-          return;
-        }
-        if (me.status !== "approved" || !me.active) {
-          // รออนุมัติ / ไม่อนุมัติ / ปิดใช้งาน → หน้าสถานะ
-          router.replace("/register");
-          return;
-        }
-        setGate({ name: "ready", me });
-      } catch (e) {
-        if (!cancelled) {
-          setGate({ name: "error", message: e instanceof Error ? e.message : "เกิดข้อผิดพลาด" });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
+  const gate = useMemberGate();
 
   if (gate.name === "loading") {
     return <p className="p-8 text-center text-sm text-muted-foreground">กำลังโหลด…</p>;

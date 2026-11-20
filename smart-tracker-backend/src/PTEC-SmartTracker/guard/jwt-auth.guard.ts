@@ -9,15 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../model/user.model';
 import { AuthService } from '../service/auth.service';
-
-/** request ที่ผ่าน JwtAuthGuard แล้ว */
-export interface AuthedRequest {
-  headers: Record<string, string | undefined>;
-  /** LINE userId จาก JWT */
-  lineUserId: string;
-  /** ผู้ใช้ในระบบ (null = ล็อกอิน LINE แล้วแต่ยังไม่ได้ลงทะเบียน) */
-  currentUser: User | null;
-}
+import type { AuthedRequest } from '../type/auth.type';
 
 /**
  * ตรวจ access JWT (Authorization: Bearer) แล้วโหลดผู้ใช้จาก DB ใส่ request

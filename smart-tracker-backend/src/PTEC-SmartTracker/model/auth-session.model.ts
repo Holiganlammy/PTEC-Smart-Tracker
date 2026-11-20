@@ -4,7 +4,7 @@ import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
  * ตาราง dbo.auth_sessions — refresh token ของแต่ละการล็อกอิน (เก็บเฉพาะค่าแฮช ไม่เก็บ token จริง)
  * ผูกกับ line_user_id (ไม่ใช่ user_id) เพราะคนที่ยังไม่ลงทะเบียนก็ต้องมี session ได้
  */
-@Entity({ name: 'auth_sessions' })
+@Entity({ name: 'Auth_Sessions' })
 export class AuthSession {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id!: string;

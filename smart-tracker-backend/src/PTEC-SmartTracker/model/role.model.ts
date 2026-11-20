@@ -9,7 +9,7 @@ export enum RoleId {
 }
 
 /** ตาราง dbo.roles — ตารางอ้างอิงสิทธิ์ผู้ใช้ (users.role_id อ้างมาที่นี่) */
-@Entity({ name: 'roles' })
+@Entity({ name: 'Roles' })
 export class Role {
   /** กำหนดเลขเอง ไม่ใช่ identity */
   @PrimaryColumn({ type: 'int' })

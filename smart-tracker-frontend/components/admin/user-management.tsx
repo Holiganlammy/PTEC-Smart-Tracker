@@ -95,7 +95,7 @@ export function UserManagement() {
       </div>
 
       <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
-        <TabsList className="grid h-auto w-full grid-cols-3 rounded-2xl p-1">
+        <TabsList className="grid h-auto group-data-horizontal/tabs:h-auto w-full grid-cols-3 rounded-2xl p-1">
           {FILTERS.map((f) => (
             <TabsTrigger key={f.value} value={f.value} className="rounded-xl py-2.5 text-sm">
               {f.label}

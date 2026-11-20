@@ -2,11 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { OPS_CONNECTION } from '../../database/database.module';
-
-export interface VenderItem {
-  venderCode: string;
-  venderName: string;
-}
+import type { VenderItem } from '../type/vender.type';
 
 /** รายชื่อบริษัทผู้รับเหมา — อ่านจาก Supplier/Vendor ของ OPS (ย้ายมาจาก SP OPS_Mobile_List_Vender) */
 @Injectable()

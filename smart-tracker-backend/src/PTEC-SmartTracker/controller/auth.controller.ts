@@ -8,9 +8,11 @@ import {
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import type { CookieOptions, Request, Response } from 'express';
 import { IsString, MinLength } from 'class-validator';
-import { AuthService, IssuedTokens } from '../service/auth.service';
+import { AuthService } from '../service/auth.service';
+import type { IssuedTokens } from '../type/auth.type';
 
 class LineLoginDto {
   @IsString()
@@ -26,6 +28,8 @@ const REFRESH_COOKIE = 'rt';
  *  - refresh token: ตั้งเป็น httpOnly cookie (JS อ่านไม่ได้) ใช้ได้เฉพาะ /auth/refresh กับ /auth/logout
  */
 @Controller('auth')
+// เข้มกว่าค่าทั่วไป: 30 ครั้ง/นาที ต่อ IP (กันเดา/ยิงถี่) — ผู้ใช้ปกติ refresh แค่ทุก ~15 นาที
+@Throttle({ default: { ttl: 60_000, limit: 30 } })
 export class AuthController {
   private readonly cookieOptions: CookieOptions;
 
@@ -75,10 +79,7 @@ export class AuthController {
   /** POST /auth/logout */
   @Post('logout')
   @HttpCode(204)
-  async logout(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     await this.auth.logout(this.readCookie(req));
     res.clearCookie(REFRESH_COOKIE, this.cookieOptions);
   }

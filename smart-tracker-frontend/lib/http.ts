@@ -40,6 +40,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** ยกเลิก request จากภายนอก */
   signal?: AbortSignal;
+  /** รูปแบบข้อมูลที่ตอบกลับ: "blob" = ไฟล์ (เช่นรูป) ค่าเริ่มต้นตามชนิดของ response (JSON/ข้อความ) */
+  responseType?: "blob";
   /** true = ไม่ต้องแนบ Authorization และไม่ต้องลองต่อ token เมื่อได้ 401 (ใช้กับ /auth/*) */
   skipAuth?: boolean;
 }
@@ -161,7 +163,7 @@ export class HttpClient {
     const hasBody = config.body !== undefined && config.method !== "GET";
 
     const headers: Record<string, string> = {
-      Accept: "application/json",
+      Accept: config.responseType === "blob" ? "*/*" : "application/json",
       // FormData ให้เบราว์เซอร์ใส่ Content-Type (พร้อม boundary) เอง
       ...(hasBody && !isForm ? { "Content-Type": "application/json" } : {}),
       ...(config.skipAuth ? {} : this.defaults.headers),
@@ -196,7 +198,7 @@ export class HttpClient {
         );
       }
 
-      const data = await this.parse(res);
+      const data = !res.ok || config.responseType !== "blob" ? await this.parse(res) : await res.blob();
 
       if (!res.ok) {
         // NestJS ส่ง message เป็น string หรือ array (จาก ValidationPipe)

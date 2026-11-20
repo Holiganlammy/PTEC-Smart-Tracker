@@ -6,11 +6,10 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Role, RoleId } from './role.model';
-
-export type UserStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+import type { UserStatus } from '../type/user.type';
 
 /** ตาราง dbo.users */
-@Entity({ name: 'users' })
+@Entity({ name: 'Users' })
 export class User {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id!: string; // mssql ส่ง bigint กลับมาเป็น string

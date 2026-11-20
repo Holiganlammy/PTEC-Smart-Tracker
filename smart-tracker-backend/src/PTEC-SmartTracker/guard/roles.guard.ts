@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RoleId } from '../model/role.model';
-import type { AuthedRequest } from './jwt-auth.guard';
+import type { AuthedRequest } from '../type/auth.type';
 
 const ROLES_KEY = 'roles';
 

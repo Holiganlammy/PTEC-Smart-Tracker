@@ -41,7 +41,7 @@ export class UpdateUserDto {
   lastName?: string;
 
   @IsOptional()
-  @Matches(/^0d{8,9}$/, {
+  @Matches(/^0\d{8,9}$/, {
     message: 'เบอร์โทรต้องเป็นตัวเลข 9-10 หลัก ขึ้นต้นด้วย 0',
   })
   phoneNumber?: string;

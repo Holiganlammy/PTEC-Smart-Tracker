@@ -22,14 +22,27 @@ const rejectSchema = z.object({
 type RejectValues = z.infer<typeof rejectSchema>;
 
 type Props = {
-  /** ชื่อผู้สมัครที่กำลังจะตีกลับ (null = ปิด dialog) */
-  userName: string | null;
+  /** สิ่งที่กำลังจะไม่อนุมัติ/ตีกลับ เช่น ชื่อผู้สมัคร หรือเลขงาน (null = ปิด dialog) */
+  subject: string | null;
   onClose: () => void;
   onConfirm: (reason: string) => Promise<void>;
+  /** ปรับข้อความได้ (ค่าเริ่มต้นเป็นของการไม่อนุมัติผู้สมัคร) */
+  title?: string;
+  label?: string;
+  placeholder?: string;
+  confirmLabel?: string;
 };
 
-/** กรอกเหตุผลก่อนตีกลับผู้สมัคร (ผู้สมัครเห็นเหตุผลนี้ในหน้าสถานะ) */
-export function RejectDialog({ userName, onClose, onConfirm }: Props) {
+/** กรอกเหตุผลก่อนไม่อนุมัติ/ตีกลับ (ใช้กับผู้สมัคร และงานในคิวตรวจ) */
+export function RejectDialog({
+  subject,
+  onClose,
+  onConfirm,
+  title = "ไม่อนุมัติผู้สมัคร",
+  label = "เหตุผลที่ไม่อนุมัติ",
+  placeholder = "เช่น ข้อมูลบริษัทไม่ตรงกับที่ลงทะเบียนไว้",
+  confirmLabel = "ยืนยันไม่อนุมัติ",
+}: Props) {
   const form = useForm<RejectValues>({
     resolver: zodResolver(rejectSchema),
     defaultValues: { reason: "" },
@@ -42,7 +55,7 @@ export function RejectDialog({ userName, onClose, onConfirm }: Props) {
 
   return (
     <Dialog
-      open={userName !== null}
+      open={subject !== null}
       onOpenChange={(open) => {
         if (!open) {
           form.reset();
@@ -53,8 +66,8 @@ export function RejectDialog({ userName, onClose, onConfirm }: Props) {
       <DialogContent>
         <form onSubmit={form.handleSubmit(submit)} noValidate className="space-y-4">
           <DialogHeader>
-            <DialogTitle>ไม่อนุมัติผู้สมัคร</DialogTitle>
-            <DialogDescription>{userName}</DialogDescription>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{subject}</DialogDescription>
           </DialogHeader>
 
           <Controller
@@ -62,12 +75,12 @@ export function RejectDialog({ userName, onClose, onConfirm }: Props) {
             control={form.control}
             render={({ field, fieldState }) => (
               <Field data-invalid={fieldState.invalid}>
-                <FieldLabel htmlFor={field.name}>เหตุผลที่ไม่อนุมัติ</FieldLabel>
+                <FieldLabel htmlFor={field.name}>{label}</FieldLabel>
                 <Textarea
                   {...field}
                   id={field.name}
                   rows={3}
-                  placeholder="เช่น ข้อมูลบริษัทไม่ตรงกับที่ลงทะเบียนไว้"
+                  placeholder={placeholder}
                   aria-invalid={fieldState.invalid}
                 />
                 {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
@@ -80,7 +93,7 @@ export function RejectDialog({ userName, onClose, onConfirm }: Props) {
               ยกเลิก
             </Button>
             <Button type="submit" variant="destructive" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting ? "กำลังบันทึก…" : "ยืนยันไม่อนุมัติ"}
+              {form.formState.isSubmitting ? "กำลังบันทึก…" : confirmLabel}
             </Button>
           </DialogFooter>
         </form>

@@ -6,21 +6,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, LessThan, Repository } from 'typeorm';
 import { AuthSession } from '../model/auth-session.model';
 import { User } from '../model/user.model';
+import type { AccessPayload, IssuedTokens } from '../type/auth.type';
 import { LineAuthService } from './line-auth.service';
-
-export interface AccessPayload {
-  /** LINE userId */
-  sub: string;
-}
-
-export interface IssuedTokens {
-  accessToken: string;
-  /** อายุ access token (วินาที) */
-  expiresIn: number;
-  /** refresh token ตัวจริง (ส่งให้เบราว์เซอร์ทาง httpOnly cookie เท่านั้น) */
-  refreshToken: string;
-  refreshExpiresAt: Date;
-}
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 

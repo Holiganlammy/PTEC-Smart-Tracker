@@ -9,7 +9,11 @@ export const OPS_CONNECTION = 'ops';
  * ทุกฐานข้อมูลอยู่ SQL Server เดียวกัน (DB_HOST/DB_USER/DB_PASSWORD ชุดเดียว)
  * ต่างกันแค่ชื่อฐานข้อมูล: databaseEnvKey = ชื่อตัวแปรที่เก็บชื่อฐาน เช่น 'DB_NAME', 'OPS_DB_NAME'
  */
-function mssqlOptions(config: ConfigService, databaseEnvKey: string, poolMax = 10): TypeOrmModuleOptions {
+function mssqlOptions(
+  config: ConfigService,
+  databaseEnvKey: string,
+  poolMax = 10,
+): TypeOrmModuleOptions {
   const database = config.getOrThrow<string>(databaseEnvKey);
   const host = config.getOrThrow<string>('DB_HOST');
   const port = Number(config.get('DB_PORT') ?? 1433);
@@ -52,7 +56,8 @@ function mssqlOptions(config: ConfigService, databaseEnvKey: string, poolMax = 1
     TypeOrmModule.forRootAsync({
       name: OPS_CONNECTION,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => mssqlOptions(config, 'OPS_DB_NAME', 5),
+      useFactory: (config: ConfigService) =>
+        mssqlOptions(config, 'OPS_DB_NAME', 5),
     }),
   ],
 })

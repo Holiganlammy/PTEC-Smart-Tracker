@@ -98,7 +98,7 @@ export function UserApproval() {
 
       {/* ตัวกรองสถานะ: 4 ช่องเท่ากันพอดีหน้าจอ ไม่ต้องเลื่อนซ้าย-ขวา */}
       <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
-        <TabsList className="grid h-auto w-full grid-cols-4 rounded-2xl p-1">
+        <TabsList className="grid h-auto group-data-horizontal/tabs:h-auto w-full grid-cols-4 rounded-2xl p-1">
           {FILTERS.map((f) => (
             <TabsTrigger key={f.value} value={f.value} className="group/tab h-auto flex-col gap-0 rounded-xl px-1 py-2">
               <span className={`text-base leading-tight ${f.tone ?? ""}`}>{countOf(f.value)}</span>
@@ -127,7 +127,7 @@ export function UserApproval() {
       )}
 
       <RejectDialog
-        userName={rejecting ? [rejecting.firstName, rejecting.lastName].filter(Boolean).join(" ") : null}
+        subject={rejecting ? [rejecting.firstName, rejecting.lastName].filter(Boolean).join(" ") : null}
         onClose={() => setRejecting(null)}
         onConfirm={async (reason) => {
           if (!rejecting) return;

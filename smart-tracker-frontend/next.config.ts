@@ -9,8 +9,24 @@ const devTunnelHosts = (process.env.DEV_TUNNEL_HOST ?? "")
 // backend (NestJS) ที่ Next จะ proxy /api/* ไปหา
 const backendUrl = process.env.BACKEND_URL ?? "http://localhost:4000";
 
+// security headers ทุกหน้า (ยังไม่ใส่ CSP เพราะ Next + LIFF SDK ต้องปรับ allowlist ให้ละเอียดก่อน)
+const securityHeaders = [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  // กัน clickjacking (LIFF เปิดเป็นหน้าหลักใน webview ของ LINE ไม่ได้ฝังใน iframe)
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  // บังคับ https เฉพาะ production (ตอน dev ผ่าน http://localhost ไม่ควรตั้ง)
+  ...(process.env.NODE_ENV === "production"
+    ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]
+    : []),
+];
+
 const nextConfig: NextConfig = {
   /* config options here */
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
   experimental: {
     agentFeedback: true,
   },
