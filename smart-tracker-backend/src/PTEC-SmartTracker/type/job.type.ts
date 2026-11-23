@@ -1,3 +1,4 @@
+import type { RoleCode } from '../service/job-permission';
 import type { JobAttatchItem, UploadKind } from './job-attatch.type';
 
 /** การกระทำของผู้รับเหมาที่เปลี่ยนสถานะงาน (POST /jobs/:id/status) */
@@ -7,6 +8,7 @@ export const JOB_ACTIONS = [
   'wait_parts', // กำลังดำเนินการ → รออะไหล่
   'resume', // รออะไหล่ → กำลังดำเนินการ
   'deliver', // กำลังดำเนินการ/รออะไหล่ → ส่งมอบงาน
+  'reject', // แจ้งงาน/รับงานแล้ว → ปฏิเสธงาน (ต้องระบุเหตุผล รอแอดมินจ่ายให้บริษัทอื่น)
 ] as const;
 export type JobAction = (typeof JOB_ACTIONS)[number];
 
@@ -47,6 +49,18 @@ export interface JobTypeItem {
 /** งานในคิวตรวจของแอดมิน (มีชื่อบริษัทผู้รับเหมาเพิ่ม) */
 export interface ReviewJobItem extends JobItem {
   venderName: string | null;
+}
+
+/** งานที่บริษัทปฏิเสธ รอแอดมินจ่ายให้บริษัทอื่น (GET /jobs/rejected) */
+export interface RejectedJobItem extends JobItem {
+  /** บริษัทที่ปฏิเสธ (บริษัทปัจจุบันของงาน) */
+  venderName: string | null;
+  rejectedAt: string | null;
+  rejectedByName: string | null;
+  /** เหตุผลที่ปฏิเสธ */
+  reason: string | null;
+  /** true = ปฏิเสธหลังจากรับงานไปแล้ว */
+  afterAccept: boolean;
 }
 
 /** จำนวนงานแยกตามกลุ่ม (ตามตัวกรองอื่น ๆ ที่เลือกอยู่) */
@@ -108,8 +122,24 @@ export interface JobHistoryItem {
   relation: JobHistoryRelation;
 }
 
+/**
+ * สมาชิกในทีมรับผิดชอบของงาน (การ์ด "ทีมรับผิดชอบ") — เป็นรายการ เพิ่มแถวได้เรื่อย ๆ
+ * ตอนนี้มีสองแบบ: คนที่กดรับงาน + ผู้รับเหมาช่วงที่ถูกมอบหมาย (บริษัทเดียวกัน)
+ * ผู้รับเหมาช่วงต่างบริษัทจะเพิ่มเป็นแถวใหม่เมื่อมีตารางงานย่อย
+ */
+export interface JobTeamMember {
+  userId: string;
+  name: string;
+  companyName: string | null;
+  role: RoleCode;
+  /** accepted = กดรับงาน, assigned = ถูกมอบหมายงาน */
+  kind: 'accepted' | 'assigned';
+}
+
 /** รายละเอียดงานเต็ม (GET /jobs/:id) — อ่านจากตาราง Jobs ของเราทั้งหมด */
 export interface JobDetail extends JobItem {
+  /** ทีมรับผิดชอบ เรียงตามลำดับที่เข้ามาร่วมงาน (ว่าง = ยังไม่มีผู้รับผิดชอบ) */
+  team: JobTeamMember[];
   /** ระดับความสำคัญ + SLA (สำเนาจาก PolicyLevel ของ OPS) */
   priority: { name: string | null; slaHours: number | null } | null;
   /** เวลาที่ OPS แจ้งงานจริง (ใช้นับ SLA) null = ไม่มี ให้ใช้ requestedAt */

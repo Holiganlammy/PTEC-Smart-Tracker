@@ -56,6 +56,7 @@ export const STATUS_TONE: Record<string, keyof typeof TONES> = {
   completed: "success",
   returned: "danger",
   cancelled: "muted",
+  rejected: "danger",
 };
 
 const dateFormat = new Intl.DateTimeFormat("th-TH", {

@@ -20,6 +20,7 @@ const timeFormat = new Intl.DateTimeFormat("th-TH", {
 
 const BLOCKED_TEXT: Record<ChatBlockReason, string> = {
   closed: "งานนี้ปิดแล้ว ส่งข้อความเพิ่มไม่ได้",
+  rejected: "งานนี้ถูกปฏิเสธแล้ว รอแอดมินจ่ายงานให้บริษัทอื่น ส่งข้อความไม่ได้",
   no_owner_yet: "ยังไม่มีผู้รับงานนี้ พิมพ์ได้หลังมีผู้รับงานแล้ว",
   not_owner: "คุณดูแชทได้อย่างเดียว เฉพาะผู้ที่รับงานนี้เท่านั้นที่พิมพ์ได้",
 };
@@ -123,7 +124,7 @@ export function JobChat({ jobId }: { jobId: string }) {
     <section className="space-y-3">
       <h3 className="flex items-center gap-1.5 px-1 text-sm font-medium text-muted-foreground">
         <MessageCircleIcon className="size-4" />
-        พูดคุยกัน
+        พูดคุยกับผู้รับเหมา
         {items && items.length > 0 && <span className="text-xs font-normal">({items.length})</span>}
       </h3>
 

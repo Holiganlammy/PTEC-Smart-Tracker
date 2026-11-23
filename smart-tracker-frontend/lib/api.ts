@@ -173,7 +173,7 @@ export type JobAttatch = {
 };
 
 /** การกระทำที่เปลี่ยนสถานะงาน: รับงาน / เริ่มดำเนินการ / รออะไหล่ / กลับมาทำต่อ / ส่งงาน */
-export type JobAction = "accept" | "start" | "wait_parts" | "resume" | "deliver";
+export type JobAction = "accept" | "start" | "wait_parts" | "resume" | "deliver" | "reject";
 
 /** ข้อมูลที่ส่งตอนเปลี่ยนสถานะ (รูปแนบไปในคำขอเดียวกัน) */
 export type ChangeJobStatusInput = {
@@ -205,7 +205,7 @@ export type JobMessage = {
 };
 
 /** เหตุที่พิมพ์ไม่ได้: closed = งานปิด/ยกเลิก, no_owner_yet = ยังไม่มีผู้รับงาน, not_owner = ไม่ใช่ผู้รับงานนี้ */
-export type ChatBlockReason = "closed" | "no_owner_yet" | "not_owner";
+export type ChatBlockReason = "closed" | "rejected" | "no_owner_yet" | "not_owner";
 
 export type JobMessageList = {
   items: JobMessage[];
@@ -213,8 +213,19 @@ export type JobMessageList = {
   blockedReason: ChatBlockReason | null;
 };
 
+/** สมาชิกทีมรับผิดชอบของงาน (เป็นรายการ เพิ่มแถวได้เรื่อย ๆ) kind: accepted = กดรับงาน, assigned = ถูกมอบหมาย */
+export type JobTeamMember = {
+  userId: string;
+  name: string;
+  companyName: string | null;
+  role: MessageSenderRole;
+  kind: "accepted" | "assigned";
+};
+
 /** รายละเอียดงานเต็ม */
 export type JobDetail = Job & {
+  /** ว่าง = ยังไม่มีผู้รับผิดชอบ */
+  team: JobTeamMember[];
   priority: { name: string | null; slaHours: number | null } | null;
   /** เวลาที่ OPS แจ้งงานจริง (ใช้นับ SLA) null = ใช้ requestedAt */
   opsRequestedAt: string | null;
@@ -247,6 +258,18 @@ export type JobEditFields = {
   address: string;
 };
 export type ReviewJobList = { items: ReviewJob[]; total: number; page: number; pageSize: number };
+
+/** งานที่บริษัทปฏิเสธ รอแอดมินจ่ายให้บริษัทอื่น */
+export type RejectedJob = Job & {
+  /** บริษัทที่ปฏิเสธ (บริษัทปัจจุบันของงาน) */
+  venderName: string | null;
+  rejectedAt: string | null;
+  rejectedByName: string | null;
+  reason: string | null;
+  /** true = ปฏิเสธหลังจากรับงานไปแล้ว */
+  afterAccept: boolean;
+};
+export type RejectedJobList = { items: RejectedJob[]; total: number; page: number; pageSize: number };
 
 /** รวม endpoint ของ backend (ใช้ `http` จาก lib/http.ts) */
 export const api = {
@@ -314,6 +337,12 @@ export const api = {
   approveJob: (id: string) => http.patch<{ id: string; statusId: number }>(`/jobs/${id}/approve`),
   returnJob: (id: string, note: string) =>
     http.patch<{ id: string; statusId: number }>(`/jobs/${id}/return`, { note }),
+  // ── แอดมิน: งานที่บริษัทปฏิเสธ + ย้ายงานไปให้บริษัทอื่น ──
+  listRejectedJobs: (params: { q?: string; page?: number; pageSize?: number }) =>
+    http.get<RejectedJobList>("/jobs/rejected", { params }),
+  /** ย้ายงานไปให้บริษัทอื่น: งานกลับเป็น "แจ้งงาน" ของบริษัทใหม่ (note เป็นข้อมูลภายใน ไม่แสดงให้บริษัทใหม่เห็น) */
+  reassignJob: (id: string, input: { venderCode: string; note?: string }) =>
+    http.patch<{ id: string; venderCode: string }>(`/jobs/${id}/reassign`, input),
 
   // ── แอดมิน (ต้องเป็น role admin) ──
   listUsers: (params?: { status?: UserStatus; q?: string; active?: boolean }) =>

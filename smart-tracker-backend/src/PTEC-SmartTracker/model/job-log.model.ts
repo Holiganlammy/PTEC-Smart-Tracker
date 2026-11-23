@@ -22,6 +22,10 @@ export enum JobLogAction {
   /** แนบ/ลบไฟล์แนบ */
   ATTACHED = 'attached',
   DETACHED = 'detached',
+  /** บริษัทปฏิเสธงาน (note = เหตุผล, from_status_id = ตอนนั้นยังแจ้งงานหรือรับงานแล้ว) */
+  REJECTED = 'rejected',
+  /** แอดมินย้ายงานไปให้บริษัทอื่น (changes = บริษัทเดิม → ใหม่) */
+  REASSIGNED = 'reassigned',
 }
 
 /**

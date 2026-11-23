@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
-import { JobReview } from "@/components/admin/job-review";
+import { AdminJobs } from "@/components/admin/admin-jobs";
 import { PortalShell } from "@/components/portal-shell";
 
-export const metadata: Metadata = { title: "ตรวจงานจาก OPS | PTEC" };
+export const metadata: Metadata = { title: "จัดการงาน | PTEC" };
 
-export default function ReviewJobsPage() {
+export default function AdminJobsPage() {
   return (
-    <PortalShell title="ตรวจงานจาก OPS">
-      <JobReview />
+    <PortalShell title="จัดการงาน">
+      <AdminJobs />
     </PortalShell>
   );
 }

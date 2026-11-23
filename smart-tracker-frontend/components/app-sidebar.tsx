@@ -50,7 +50,7 @@ const MAIN_MENU: NavItem[] = [
 ];
 
 const ADMIN_MENU: NavItem[] = [
-  { label: "ตรวจงานจาก OPS", href: "/admin/jobs", Icon: ClipboardCheckIcon, ready: true },
+  { label: "จัดการงาน", href: "/admin/jobs", Icon: ClipboardCheckIcon, ready: true },
   { label: "อนุมัติผู้ใช้", href: "/admin/users", Icon: UserCheckIcon, ready: true },
   { label: "จัดการผู้ใช้", href: "/admin/users/manage", Icon: UsersIcon, ready: true },
 ];

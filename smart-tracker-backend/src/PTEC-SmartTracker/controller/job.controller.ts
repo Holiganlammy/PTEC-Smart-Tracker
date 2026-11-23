@@ -16,6 +16,7 @@ import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../guard/jwt-auth.guard';
 import { Roles, RolesGuard } from '../guard/roles.guard';
 import { AssignJobDto } from '../dto/job-assign.dto';
+import { ReassignJobDto } from '../dto/job-reassign.dto';
 import { ReturnJobDto, UpdateJobDto } from '../dto/job-review.dto';
 import { ListJobsQuery } from '../dto/job-query.dto';
 import { ChangeJobStatusDto } from '../dto/job-status.dto';
@@ -111,6 +112,24 @@ export class JobController {
   @Get('review/count')
   reviewCount() {
     return this.jobService.countPendingReview();
+  }
+
+  /** GET /jobs/rejected?q=&page= — งานที่บริษัทปฏิเสธ รอแอดมินจ่ายให้บริษัทอื่น */
+  @Roles(RoleId.ADMIN)
+  @Get('rejected')
+  rejectedList(@Query() query: ListJobsQuery) {
+    return this.jobService.listRejected(query);
+  }
+
+  /** PATCH /jobs/:id/reassign  { venderCode, note? } — แอดมินย้ายงานไปให้บริษัทอื่น (งานกลับเป็น "แจ้งงาน" ของบริษัทใหม่) */
+  @Roles(RoleId.ADMIN)
+  @Patch(':id/reassign')
+  reassign(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ReassignJobDto,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.jobService.reassign(req.currentUser!.id, String(id), dto);
   }
 
   /** PATCH /jobs/:id  { jobType, branchName, details, brand, model } — แก้ข้อมูลงานที่รอตรวจ */

@@ -10,6 +10,20 @@ import { RoleId } from '../model/role.model';
  *  - พิมพ์แชท: เจ้าของงาน + แอดมิน และต้องเป็นงานที่ยังไม่ปิด/ยกเลิก
  */
 
+/** รหัสบทบาทที่ส่งออกให้หน้าเว็บ (ป้ายข้างชื่อในแชท/ทีมรับผิดชอบ) */
+export type RoleCode = 'contractor' | 'head' | 'sub_contractor' | 'admin';
+
+const ROLE_CODE: Record<number, RoleCode> = {
+  [RoleId.CONTRACTOR]: 'contractor',
+  [RoleId.HEAD]: 'head',
+  [RoleId.SUB_CONTRACTOR]: 'sub_contractor',
+  [RoleId.ADMIN]: 'admin',
+};
+
+export function roleCode(roleId: number): RoleCode {
+  return ROLE_CODE[Number(roleId)] ?? 'contractor';
+}
+
 /** ข้อมูลของงานที่ใช้ตัดสินสิทธิ์ */
 export interface JobOwnership {
   statusId: number;
@@ -33,6 +47,9 @@ const STATUS_CHANGERS: number[] = [
 
 /** สถานะแจ้งงาน (ยังไม่มีใครรับ) */
 const STATUS_NEW: number = JobStatusId.NEW;
+
+/** สถานะปฏิเสธงาน (รอแอดมินจ่ายใหม่) */
+const STATUS_REJECTED: number = JobStatusId.REJECTED;
 
 /** สถานะที่แชทเป็นแบบอ่านอย่างเดียว */
 const CHAT_CLOSED: number[] = [JobStatusId.COMPLETED, JobStatusId.CANCELLED];
@@ -60,7 +77,8 @@ export function canChangeStatus(user: Actor, o: JobOwnership): boolean {
 }
 
 /** เหตุที่พิมพ์แชทไม่ได้ (UI แปลงเป็นข้อความไทยเอง) */
-export type ChatBlockReason = 'closed' | 'no_owner_yet' | 'not_owner';
+export type ChatBlockReason =
+  'closed' | 'rejected' | 'no_owner_yet' | 'not_owner';
 
 export interface ChatPermission {
   canPost: boolean;
@@ -73,6 +91,10 @@ export function chatPermission(user: Actor, o: JobOwnership): ChatPermission {
   }
   if (Number(user.roleId) === Number(RoleId.ADMIN)) {
     return { canPost: true, reason: null };
+  }
+  // บริษัทที่ปฏิเสธงานแล้วอ่านอย่างเดียว (แอดมินยังพิมพ์ถามเหตุผลได้ — เช็กข้างบนแล้ว)
+  if (o.statusId === STATUS_REJECTED) {
+    return { canPost: false, reason: 'rejected' };
   }
   if (isStatusChanger(user) && isJobOwner(user, o)) {
     return { canPost: true, reason: null };

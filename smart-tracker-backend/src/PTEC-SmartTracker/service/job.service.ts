@@ -17,6 +17,7 @@ import {
 } from 'typeorm';
 import { OPS_CONNECTION } from '../../database/database.module';
 import type { UpdateJobDto } from '../dto/job-review.dto';
+import type { ReassignJobDto } from '../dto/job-reassign.dto';
 import type { ChangeJobStatusDto } from '../dto/job-status.dto';
 import type { ListJobsQuery } from '../dto/job-query.dto';
 import { Job } from '../model/job.model';
@@ -35,12 +36,14 @@ import type {
   JobItem,
   JobList,
   JobRow,
+  JobTeamMember,
+  RejectedJobItem,
   JobTimelineEvent,
   JobTypeItem,
   ReviewJobItem,
 } from '../type/job.type';
 import { JobAttatchService, type StagedFile } from './job-attatch.service';
-import { canChangeStatus, type JobOwnership } from './job-permission';
+import { canChangeStatus, roleCode, type JobOwnership } from './job-permission';
 import { VenderService } from './vender.service';
 
 /** สถานะที่ผู้รับเหมาไม่เห็น: รอแอดมินตรวจ / ตีกลับ */
@@ -79,7 +82,23 @@ const TRANSITIONS: Record<
     kind: 'completed',
     log: JobLogAction.DELIVERED,
   },
+  // ปฏิเสธงาน: ทำได้ก่อนเริ่มงานเท่านั้น (ต้องระบุเหตุผล ไม่แนบรูป) — kind ไม่ถูกใช้
+  reject: {
+    from: [JobStatusId.NEW, JobStatusId.ACCEPTED],
+    to: JobStatusId.REJECTED,
+    kind: 'accepted',
+    log: JobLogAction.REJECTED,
+  },
 };
+
+/** สถานะที่แอดมินย้ายงานไปให้บริษัทอื่นได้ (ก่อนส่งมอบ/ปิดงาน รวมงานที่ถูกปฏิเสธ) */
+const REASSIGNABLE = [
+  JobStatusId.NEW,
+  JobStatusId.ACCEPTED,
+  JobStatusId.IN_PROGRESS,
+  JobStatusId.WAITING_PARTS,
+  JobStatusId.REJECTED,
+];
 
 const HIDDEN_FROM_CONTRACTOR = [
   JobStatusId.PENDING_REVIEW,
@@ -207,6 +226,21 @@ export class JobService {
   }
 
   /**
+   * บริษัทที่ใช้ตรวจสิทธิ์เข้าถึงงานใบหนึ่ง: ผู้รับเหมา = บริษัทของตัวเอง, แอดมิน = บริษัทของงานนั้น (เปิดดูได้ทุกบริษัท)
+   */
+  private async resolveJobVender(user: User, id: string): Promise<string> {
+    if (Number(user.roleId) !== Number(RoleId.ADMIN)) {
+      return this.resolveVender(user);
+    }
+    const job = await this.jobs.findOne({
+      where: { id },
+      select: { id: true, venderCode: true },
+    });
+    if (!job) throw new NotFoundException('ไม่พบงาน');
+    return job.venderCode;
+  }
+
+  /**
    * ขอบเขตงานที่ผู้ใช้เห็นได้: ของบริษัทตัวเอง และไม่รวมสถานะรอตรวจ/ตีกลับ (กรองฝั่ง server)
    * ผู้รับเหมาช่วงเห็นเฉพาะงานที่ได้รับมอบหมายให้ตัวเอง
    */
@@ -322,7 +356,7 @@ export class JobService {
 
   /** รายละเอียดงานหนึ่งใบ (ต้องอยู่ในขอบเขตที่ผู้ใช้เห็นได้) — อ่านจากตาราง Jobs ของเราทั้งหมด */
   async getDetail(user: User, id: string): Promise<JobDetail> {
-    const venderCode = this.resolveVender(user);
+    const venderCode = await this.resolveJobVender(user, id);
     const qb = this.scope(this.baseQuery(), user, venderCode).andWhere(
       'j.id = :id',
       { id },
@@ -337,19 +371,25 @@ export class JobService {
       statusId: Number(row.statusId),
       assignedTo: row.assigneeId,
     });
-    const [timeline, history, attachments] = await Promise.all([
-      this.getTimeline(id),
+    const [timeline, history, attachments, team] = await Promise.all([
+      this.getTimeline(id, Number(user.roleId) === Number(RoleId.ADMIN)),
       this.getHistory(user, venderCode, {
         id,
         branchCode: row.branchCode,
         jobType: row.jobType,
         opsJobDetailId: full?.opsJobDetailId ?? null,
       }),
-      this.attatchService.list(user, { id, statusId: row.statusId }),
+      this.attatchService.list(user, {
+        id,
+        statusId: row.statusId,
+        venderCode,
+      }),
+      this.getTeam(venderCode, ownership),
     ]);
 
     return {
       ...this.toItem(row),
+      team,
       priority:
         full?.priorityName || full?.slaHours != null
           ? { name: full.priorityName, slaHours: full.slaHours }
@@ -381,21 +421,76 @@ export class JobService {
     );
   }
 
+  /**
+   * ทีมรับผิดชอบ: คนที่กดรับงาน แล้วตามด้วยผู้รับเหมาช่วงที่ถูกมอบหมาย (คนเดียวกันไม่ซ้ำแถว)
+   * ผู้รับเหมาช่วงต่างบริษัทจะต่อท้ายรายการนี้เมื่อมีตารางงานย่อย
+   */
+  private async getTeam(
+    venderCode: string,
+    o: JobOwnership,
+  ): Promise<JobTeamMember[]> {
+    const ids = [
+      ...new Set(
+        [o.acceptedBy, o.assignedTo]
+          .filter((x): x is string => x !== null)
+          .map(String),
+      ),
+    ];
+    if (ids.length === 0) return [];
+
+    const [users, names] = await Promise.all([
+      this.jobs.manager.find(User, { where: { id: In(ids) } }),
+      this.venderService.getNames([venderCode]),
+    ]);
+    const byId = new Map(users.map((u) => [String(u.id), u]));
+    const companyName = names.get(venderCode) ?? null;
+
+    const team: JobTeamMember[] = [];
+    const add = (id: string | null, kind: JobTeamMember['kind']) => {
+      if (id === null || team.some((m) => m.userId === String(id))) return;
+      const u = byId.get(String(id));
+      if (!u) return;
+      team.push({
+        userId: String(u.id),
+        name:
+          [u.firstName, u.lastName].filter(Boolean).join(' ') || 'ไม่ทราบชื่อ',
+        companyName,
+        role: roleCode(u.roleId),
+        kind,
+      });
+    };
+    add(o.acceptedBy, 'accepted');
+    add(o.assignedTo, 'assigned');
+    return team;
+  }
+
   /** ใครเป็นเจ้าของงาน: คนที่กดรับงานล่าสุด (จากประวัติ) + ผู้รับเหมาช่วงที่ถูกมอบหมาย */
   async getOwnership(job: {
     id: string;
     statusId: number;
     assignedTo: string | null;
   }): Promise<JobOwnership> {
-    const accepted = await this.jobs.manager.findOne(JobLog, {
-      where: { jobId: job.id, action: JobLogAction.ACCEPTED },
-      order: { id: 'DESC' },
-      select: { id: true, actorId: true },
-    });
+    const [accepted, moved] = await Promise.all([
+      this.jobs.manager.findOne(JobLog, {
+        where: { jobId: job.id, action: JobLogAction.ACCEPTED },
+        order: { id: 'DESC' },
+        select: { id: true, actorId: true },
+      }),
+      this.jobs.manager.findOne(JobLog, {
+        where: { jobId: job.id, action: JobLogAction.REASSIGNED },
+        order: { id: 'DESC' },
+        select: { id: true },
+      }),
+    ]);
+    // คนที่รับงานก่อนแอดมินย้ายบริษัท ไม่นับเป็นเจ้าของงานของบริษัทใหม่
+    const acceptedNow =
+      accepted && (!moved || BigInt(accepted.id) > BigInt(moved.id))
+        ? accepted.actorId
+        : null;
     return {
       statusId: Number(job.statusId),
       assignedTo: job.assignedTo ?? null,
-      acceptedBy: accepted?.actorId ?? null,
+      acceptedBy: acceptedNow,
     };
   }
 
@@ -424,7 +519,12 @@ export class JobService {
       );
     }
 
-    const files = upload.files ?? [];
+    if (dto.action === 'reject' && !dto.note) {
+      throw new BadRequestException('กรุณาระบุเหตุผลที่ปฏิเสธงาน');
+    }
+
+    // ปฏิเสธงานไม่แนบรูป (ไฟล์ที่ส่งมาจะถูกละไว้)
+    const files = dto.action === 'reject' ? [] : (upload.files ?? []);
     const beforeFiles =
       dto.action === 'deliver' ? (upload.beforeFiles ?? []) : [];
     let repairedAt: Date | null = null;
@@ -537,8 +637,14 @@ export class JobService {
   async findAccessible(
     user: User,
     id: string,
-  ): Promise<{ id: string; statusId: number; assignedTo: string | null }> {
-    const venderCode = this.resolveVender(user);
+  ): Promise<{
+    id: string;
+    statusId: number;
+    assignedTo: string | null;
+    /** บริษัทของงาน ณ ตอนนี้ (scope กรองด้วยรหัสนี้อยู่แล้ว) */
+    venderCode: string;
+  }> {
+    const venderCode = await this.resolveJobVender(user, id);
     const row = await this.scope(
       this.jobs
         .createQueryBuilder('j')
@@ -558,6 +664,7 @@ export class JobService {
       id: row.id,
       statusId: Number(row.statusId),
       assignedTo: row.assignedTo ?? null,
+      venderCode,
     };
   }
 
@@ -662,11 +769,21 @@ export class JobService {
   }
 
   /** เหตุการณ์เปลี่ยนสถานะของงาน (ไม่รวมขั้นตรวจของแอดมิน: รอตรวจ/ตีกลับ) เรียงเก่า → ใหม่ */
-  private async getTimeline(jobId: string): Promise<JobTimelineEvent[]> {
-    const logs = await this.jobs.manager.find(JobLog, {
+  private async getTimeline(
+    jobId: string,
+    isAdmin: boolean,
+  ): Promise<JobTimelineEvent[]> {
+    let logs = await this.jobs.manager.find(JobLog, {
       where: { jobId, toStatusId: Not(IsNull()) },
       order: { id: 'ASC' },
     });
+    // งานที่แอดมินย้ายมาให้บริษัทนี้: บริษัทเห็นประวัติเริ่มจากตอนที่ย้ายมา (ไม่เห็นของบริษัทเดิม) — แอดมินเห็นทั้งหมด
+    if (!isAdmin) {
+      const moved = logs
+        .map((l) => l.action)
+        .lastIndexOf(JobLogAction.REASSIGNED);
+      if (moved > 0) logs = logs.slice(moved);
+    }
     // ตัดขั้นตรวจของแอดมิน (รอตรวจ/ตีกลับ) ออกในโค้ด เพราะผู้รับเหมาไม่ควรเห็น
     const events = logs.filter(
       (l) =>
@@ -689,7 +806,8 @@ export class JobService {
       statusId: e.toStatusId!,
       at: new Date(e.createdAt).toISOString(),
       actorName: e.actorId ? (names.get(e.actorId) ?? null) : null,
-      note: e.note,
+      // หมายเหตุตอนแอดมินย้ายบริษัทเป็นข้อมูลภายใน ไม่ให้บริษัทใหม่เห็น
+      note: !isAdmin && e.action === JobLogAction.REASSIGNED ? null : e.note,
     }));
   }
 
@@ -780,6 +898,126 @@ export class JobService {
       where: { statusId: JobStatusId.PENDING_REVIEW },
     });
     return { pending };
+  }
+
+  /** งานที่บริษัทปฏิเสธ รอแอดมินจ่ายให้บริษัทอื่น (เก่า → ใหม่) พร้อมเหตุผลและผู้ปฏิเสธ */
+  async listRejected(query: ListJobsQuery): Promise<JobList<RejectedJobItem>> {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+
+    const qb = this.baseQuery().where('j.statusId = :rejected', {
+      rejected: JobStatusId.REJECTED,
+    });
+    if (query.venderCode) {
+      qb.andWhere('j.venderCode = :venderCode', {
+        venderCode: query.venderCode,
+      });
+    }
+    this.applySearch(qb, query.q);
+
+    const { items, total } = await this.fetchPage(qb, page, pageSize, 'ASC');
+    if (items.length === 0) return { items: [], total, page, pageSize };
+
+    const logs = await this.jobs.manager.find(JobLog, {
+      where: {
+        jobId: In(items.map((i) => i.id)),
+        action: JobLogAction.REJECTED,
+      },
+      order: { id: 'ASC' },
+    });
+    const lastByJob = new Map(logs.map((l) => [String(l.jobId), l])); // รายการหลังทับรายการก่อน = ครั้งล่าสุด
+    const actorIds = [
+      ...new Set(
+        [...lastByJob.values()]
+          .map((l) => l.actorId)
+          .filter((a): a is string => !!a),
+      ),
+    ];
+    const [actors, names] = await Promise.all([
+      actorIds.length
+        ? this.jobs.manager.find(User, { where: { id: In(actorIds) } })
+        : Promise.resolve([] as User[]),
+      this.venderService.getNames(items.map((i) => i.venderCode)),
+    ]);
+    const actorNames = new Map(
+      actors.map((u) => [
+        String(u.id),
+        [u.firstName, u.lastName].filter(Boolean).join(' '),
+      ]),
+    );
+
+    return {
+      items: items.map((i) => {
+        const log = lastByJob.get(String(i.id));
+        return {
+          ...i,
+          venderName: names.get(i.venderCode) ?? null,
+          rejectedAt: log ? new Date(log.createdAt).toISOString() : null,
+          rejectedByName: log?.actorId
+            ? (actorNames.get(String(log.actorId)) ?? null)
+            : null,
+          reason: log?.note ?? null,
+          afterAccept:
+            Number(log?.fromStatusId) === Number(JobStatusId.ACCEPTED),
+        };
+      }),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * แอดมินย้ายงานไปให้บริษัทอื่น: งานใบเดิมเปลี่ยนบริษัท กลับเป็นสถานะ "แจ้งงาน" และล้างผู้ถูกมอบหมาย
+   * (งานหายจากรายการของบริษัทเดิม; ประวัติ/รูป/แชทของบริษัทเดิมบริษัทใหม่ไม่เห็น แอดมินเห็นทั้งหมด)
+   * เปลี่ยนแบบมีเงื่อนไข (สถานะ + บริษัทเดิม) กันแอดมินสองคนกดพร้อมกัน บันทึกประวัติในทรานแซกชันเดียวกัน
+   */
+  async reassign(adminId: string, id: string, dto: ReassignJobDto) {
+    if (!(await this.venderService.exists(dto.venderCode))) {
+      throw new BadRequestException('ไม่พบบริษัทนี้');
+    }
+    return this.jobs.manager.transaction(async (em) => {
+      const job = await em.findOne(Job, { where: { id } });
+      if (!job) throw new NotFoundException('ไม่พบงาน');
+      if (!REASSIGNABLE.includes(Number(job.statusId))) {
+        throw new ConflictException(
+          'งานนี้ย้ายบริษัทไม่ได้ในสถานะปัจจุบัน (ส่งมอบ/ปิดงาน/ยกเลิกแล้ว หรือยังรอตรวจ)',
+        );
+      }
+      if (job.venderCode === dto.venderCode) {
+        throw new BadRequestException('งานนี้เป็นของบริษัทนี้อยู่แล้ว');
+      }
+
+      const res = await em.update(
+        Job,
+        { id, statusId: job.statusId, venderCode: job.venderCode },
+        {
+          venderCode: dto.venderCode,
+          statusId: JobStatusId.NEW,
+          assignedTo: null,
+          assignedAt: null,
+          updatedAt: () => 'SYSDATETIME()',
+        },
+      );
+      if (!res.affected) {
+        throw new ConflictException(
+          'งานเปลี่ยนไปแล้ว กรุณารีเฟรชหน้าแล้วลองใหม่',
+        );
+      }
+      await em.insert(JobLog, {
+        jobId: id,
+        action: JobLogAction.REASSIGNED,
+        fromStatusId: job.statusId,
+        toStatusId: JobStatusId.NEW,
+        actorId: adminId,
+        note: dto.note ?? null,
+        changes: JSON.stringify({
+          venderCode: { from: job.venderCode, to: dto.venderCode },
+          assignedTo: { from: job.assignedTo, to: null },
+        } satisfies JobLogChanges),
+      });
+      return { id, venderCode: dto.venderCode };
+    });
   }
 
   /**

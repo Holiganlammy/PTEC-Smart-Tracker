@@ -11,6 +11,7 @@ export enum JobStatusId {
   COMPLETED = 7, // ปิดงาน
   RETURNED = 8, // ตีกลับ
   CANCELLED = 9, // ยกเลิก
+  REJECTED = 10, // บริษัทปฏิเสธงาน รอแอดมินจ่ายให้บริษัทอื่น (ต้องเพิ่มแถวนี้ในตาราง Job_Status ด้วย docs/sql/09)
 }
 
 /** ตาราง dbo.job_status — สถานะงาน (jobs.status_id อ้างมาที่นี่) */

@@ -72,14 +72,18 @@ export class JobAttatchController {
     @Req() req: AuthedRequest,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const job = await this.jobService.findAccessible(
-      req.currentUser!,
-      String(id),
+    const user = req.currentUser!;
+    const job = await this.jobService.findAccessible(user, String(id));
+    const { file, mime } = await this.attatchService.open(
+      user,
+      job,
+      String(attId),
     );
-    const { file, mime } = await this.attatchService.open(job, String(attId));
     res.set({
       'Content-Type': mime,
       'Content-Disposition': 'inline',
+      // ไฟล์จาก OPS เป็นของนอกระบบ: ห้ามเบราว์เซอร์เดาชนิดเอง
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, max-age=300',
     });
     return file;

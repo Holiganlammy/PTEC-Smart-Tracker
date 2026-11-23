@@ -30,6 +30,8 @@ import type {
 export interface AccessibleJob {
   id: string;
   statusId: number;
+  /** บริษัทของงานตอนนี้ — ส่งมาแล้วผู้รับเหมาจะไม่เห็นรูปที่บริษัทอื่นอัปโหลดไว้ (งานที่ถูกย้ายมา) */
+  venderCode?: string;
 }
 
 /** ไฟล์ที่ตรวจผ่านและเขียนลงดิสก์แล้ว แต่ยังไม่ได้บันทึกลง DB */
@@ -52,7 +54,21 @@ const MIME_BY_EXT: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.png': 'image/png',
   '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
   '.pdf': 'application/pdf',
+  // เอกสารที่ OPS แนบมาได้ (ดาวน์โหลดไปเปิดเอง) — ไม่อยู่ในรายการ = application/octet-stream
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
+  '.doc': 'application/msword',
+  '.docx':
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx':
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.txt': 'text/plain',
+  '.zip': 'application/zip',
 };
 
 /** สถานะของงานที่อัปโหลดแต่ละชนิดได้ (ยืนยันรับงาน → กำลังดำเนินงาน → ส่งงาน) */
@@ -102,6 +118,14 @@ export class JobAttatchService {
     );
   }
 
+  /** ไม่ต้องกรองรูปตามบริษัท: แอดมิน หรือผู้เรียกที่ไม่ได้ส่งรหัสบริษัทของงานมา */
+  private isUnscoped(user: User, job: AccessibleJob): boolean {
+    return (
+      Number(user.roleId) === Number(RoleId.ADMIN) ||
+      job.venderCode === undefined
+    );
+  }
+
   async list(user: User, job: AccessibleJob): Promise<JobAttatchItem[]> {
     const rows = await this.attatches
       .createQueryBuilder('a')
@@ -121,6 +145,14 @@ export class JobAttatchService {
       ])
       .where('a.jobId = :jobId', { jobId: job.id })
       .andWhere('a.deletedAt IS NULL')
+      // รูปของงานที่ถูกย้ายมา: บริษัทเห็นเฉพาะรูปจาก OPS และรูปที่คนในบริษัทตัวเองอัปโหลด (แอดมินเห็นทั้งหมด)
+      .andWhere(
+        "(:unscoped = 1 OR a.source = 'ops' OR a.uploadedBy IS NULL OR u.venderCode = :vender)",
+        {
+          unscoped: this.isUnscoped(user, job) ? 1 : 0,
+          vender: job.venderCode ?? '',
+        },
+      )
       .orderBy('a.id', 'ASC')
       .getRawMany<{
         id: string;
@@ -318,11 +350,26 @@ export class JobAttatchService {
   }
 
   /** เปิดตัวไฟล์: strack อ่านจากที่เก็บของเรา, ops อ่านจาก OPS_FILE_DIR หรือ OPS_FILE_BASE_URL */
-  async open(job: AccessibleJob, attId: string) {
+  async open(user: User, job: AccessibleJob, attId: string) {
     const row = await this.attatches.findOne({
       where: { id: attId, jobId: job.id },
     });
     if (!row || row.deletedAt) throw new NotFoundException('ไม่พบไฟล์');
+
+    // รูปที่บริษัทอื่นอัปโหลดไว้ (งานถูกย้ายมาให้บริษัทนี้) ไม่ให้เปิด — แอดมินเปิดได้
+    if (
+      row.source === 'strack' &&
+      row.uploadedBy &&
+      !this.isUnscoped(user, job)
+    ) {
+      const uploader = await this.attatches.manager.findOne(User, {
+        where: { id: row.uploadedBy },
+        select: { id: true, venderCode: true },
+      });
+      if (uploader?.venderCode !== job.venderCode) {
+        throw new NotFoundException('ไม่พบไฟล์');
+      }
+    }
 
     const name = basename(row.fileName); // กัน path traversal
     const mime =

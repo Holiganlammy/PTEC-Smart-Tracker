@@ -13,7 +13,7 @@ import { JobEditDialog } from "./job-edit-dialog";
 import { RejectDialog } from "./reject-dialog";
 
 /** คิวตรวจงานจาก OPS (เฉพาะ admin): อนุมัติ = ส่งให้ผู้รับเหมา, ตีกลับ = ส่งกลับพร้อมเหตุผล */
-export function JobReview() {
+export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {}) {
   const gate = useAdminGate();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -59,6 +59,11 @@ export function JobReview() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(1);
   }, [ready, load]);
+
+  // แจ้งจำนวนให้ป้ายบนแท็บ (เฉพาะตอนไม่ได้ค้นหา — จำนวนตอนค้นหาไม่ใช่จำนวนทั้งหมด)
+  useEffect(() => {
+    if (jobs !== null && debouncedQuery === "") onTotal?.(total);
+  }, [jobs, total, debouncedQuery, onTotal]);
 
   async function loadMore() {
     setLoadingMore(true);

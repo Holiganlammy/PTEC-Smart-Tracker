@@ -25,7 +25,8 @@ const COPY: Record<
     label: string;
     title: string;
     description: string;
-    photoLabel: string;
+    /** null = ขั้นนี้ไม่แนบรูป */
+    photoLabel: string | null;
     noteLabel: string;
     noteRequired: boolean;
     confirm: string;
@@ -72,6 +73,17 @@ const COPY: Record<
     confirm: "ดำเนินการต่อ",
     success: "กลับมาดำเนินการต่อแล้ว",
   },
+  reject: {
+    label: "ปฏิเสธงาน",
+    title: "ปฏิเสธงานนี้",
+    description:
+      "ใช้เมื่อบริษัทของคุณรับงานนี้ไม่ได้ งานจะถูกส่งให้แอดมินจ่ายให้บริษัทอื่น คุณจะกดทำอะไรกับงานนี้ต่อไม่ได้ และงานจะหายจากรายการของคุณเมื่อแอดมินย้ายบริษัท",
+    photoLabel: null,
+    noteLabel: "เหตุผลที่ปฏิเสธงาน",
+    noteRequired: true,
+    confirm: "ยืนยันปฏิเสธงาน",
+    success: "ปฏิเสธงานแล้ว รอแอดมินจ่ายให้บริษัทอื่น",
+  },
 };
 
 /** ปุ่มเปลี่ยนสถานะท้ายหน้ารายละเอียดงาน — แสดงเฉพาะที่เซิร์ฟเวอร์บอกว่าทำได้ (job.actions) */
@@ -113,6 +125,15 @@ export function JobActions({
       {secondary && (
         <Button variant="outline" className="h-12 w-full rounded-xl" onClick={() => setOpen(secondary)}>
           {COPY[secondary].label}
+        </Button>
+      )}
+      {can("reject") && (
+        <Button
+          variant="outline"
+          className="h-12 w-full rounded-xl border-danger/40 text-danger hover:bg-danger/10 hover:text-danger"
+          onClick={() => setOpen("reject")}
+        >
+          {COPY.reject.label}
         </Button>
       )}
 
@@ -164,7 +185,7 @@ function ActionForm({
       const updated = await api.changeJobStatus(job.id, {
         action,
         note: note.trim() || undefined,
-        files,
+        files: copy.photoLabel === null ? [] : files,
       });
       toast.success(copy.success);
       onChanged(updated);
@@ -192,10 +213,12 @@ function ActionForm({
       </DialogHeader>
 
       <div className="space-y-4 text-sm">
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.photoLabel}</p>
-          <PhotoPicker files={files} onChange={setFiles} disabled={busy} />
-        </div>
+        {copy.photoLabel !== null && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">{copy.photoLabel}</p>
+            <PhotoPicker files={files} onChange={setFiles} disabled={busy} />
+          </div>
+        )}
         <div className="space-y-1.5">
           <label htmlFor="action-note" className="text-xs font-medium text-muted-foreground">
             {copy.noteLabel}
@@ -221,7 +244,11 @@ function ActionForm({
         <Button variant="outline" className="h-11 rounded-xl" disabled={busy} onClick={onClose}>
           ยกเลิก
         </Button>
-        <Button className="h-11 rounded-xl" disabled={busy} onClick={submit}>
+        <Button
+          className={`h-11 rounded-xl ${action === "reject" ? "bg-danger text-white hover:bg-danger/90" : ""}`}
+          disabled={busy}
+          onClick={submit}
+        >
           {busy ? "กำลังบันทึก…" : copy.confirm}
         </Button>
       </DialogFooter>

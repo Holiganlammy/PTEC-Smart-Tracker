@@ -39,7 +39,8 @@ export function JobPhotos({
   uploadable: boolean;
   onChange: (next: JobAttatch[]) => void;
 }) {
-  const items = attachments.filter((a) => a.kind === kind);
+  // ไทม์ไลน์แสดงเฉพาะรูป — ไฟล์เอกสารจาก OPS (PDF/Excel ฯลฯ) อยู่ในการ์ด "ไฟล์แนบ" ด้านล่าง (JobFiles)
+  const items = attachments.filter((a) => a.kind === kind && a.isImage);
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -151,7 +152,7 @@ function Thumb({ jobId, item, onOpen }: { jobId: string; item: JobAttatch; onOpe
 }
 
 /** รูปที่ดึงผ่าน API ที่ต้องมี token (img src ธรรมดาแนบ Authorization ไม่ได้) */
-function BlobImage({ jobId, item, className }: { jobId: string; item: JobAttatch; className?: string }) {
+export function BlobImage({ jobId, item, className }: { jobId: string; item: JobAttatch; className?: string }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 

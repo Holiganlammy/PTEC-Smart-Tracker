@@ -1,8 +1,7 @@
-import type { ChatBlockReason } from '../service/job-permission';
+import type { ChatBlockReason, RoleCode } from '../service/job-permission';
 
 /** รหัสบทบาทที่ส่งออกให้หน้าเว็บ (ใช้แสดงป้ายข้างชื่อ) */
-export type MessageSenderRole =
-  'contractor' | 'head' | 'sub_contractor' | 'admin';
+export type MessageSenderRole = RoleCode;
 
 export interface JobMessageItem {
   id: string;

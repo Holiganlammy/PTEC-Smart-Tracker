@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -20,10 +21,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ReassignDialog } from "@/components/admin/reassign-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { type JobAttatch, type JobDetail, type JobHistoryRelation, type JobTimelineEvent } from "@/lib/api";
+import {
+  RoleId,
+  type JobAttatch,
+  type JobDetail,
+  type JobHistoryRelation,
+  type JobTeamMember,
+  type JobTimelineEvent,
+} from "@/lib/api";
 import { JobActions } from "./job-actions";
 import { JobChat } from "./job-chat";
+import { JobFiles } from "./job-files";
 import { JobPhotos } from "./job-photos";
 import { STATUS_TONE, TONES } from "./job-list";
 import { useJob } from "./use-job";
@@ -39,13 +49,25 @@ const STEPS = [
 
 const STATUS_COMPLETED = 7;
 const STATUS_CANCELLED = 9;
+const STATUS_REJECTED = 10;
+
+/** สถานะที่แอดมินย้ายงานไปให้บริษัทอื่นได้ (ตรงกับฝั่ง backend: ก่อนส่งมอบ + งานที่ถูกปฏิเสธ) */
+const REASSIGNABLE_STATUSES = [2, 3, 4, 5, STATUS_REJECTED];
+
+const stepOf = (statusId: number) => STEPS.findIndex((s) => (s.statuses as readonly number[]).includes(statusId));
 
 /** ขั้นปัจจุบัน (0–3); STEPS.length = เสร็จครบทุกขั้น; -1 = ยกเลิก */
-function currentStep(statusId: number): number {
-  if (statusId === STATUS_CANCELLED) return -1;
-  if (statusId === STATUS_COMPLETED) return STEPS.length;
-  const i = STEPS.findIndex((s) => (s.statuses as readonly number[]).includes(statusId));
-  return i === -1 ? 0 : i;
+function currentStep(job: JobDetail): number {
+  if (job.statusId === STATUS_CANCELLED) return -1;
+  if (job.statusId === STATUS_COMPLETED) return STEPS.length;
+  const i = stepOf(job.statusId);
+  if (i !== -1) return i;
+  // สถานะนอกแถบขั้นตอน (เช่น ปฏิเสธงาน): ใช้ขั้นล่าสุดที่งานเคยไปถึง
+  for (const e of [...job.timeline].reverse()) {
+    const k = stepOf(e.statusId);
+    if (k !== -1) return k;
+  }
+  return 0;
 }
 
 const dateTimeFormat = new Intl.DateTimeFormat("th-TH", {
@@ -113,6 +135,7 @@ export function JobDetailView({ id }: { id: string }) {
   return (
     <JobDetailBody
       job={job}
+      isAdmin={gate.me.roleId === RoleId.ADMIN}
       onAttachmentsChange={(attachments) => setJob((cur) => (cur ? { ...cur, attachments } : cur))}
       onJobChange={setJob}
       onReload={reload}
@@ -120,9 +143,15 @@ export function JobDetailView({ id }: { id: string }) {
   );
 }
 
+/** กลับหน้าก่อนหน้า (ผู้รับเหมามาจากรายการงาน แอดมินมาจากหน้าจัดการงาน) — ถ้าเปิดลิงก์ตรง ๆ ไปรายการงาน */
 function BackButton() {
+  const router = useRouter();
   return (
-    <Button variant="outline" className="h-12 w-full rounded-xl" nativeButton={false} render={<Link href="/jobs" />}>
+    <Button
+      variant="outline"
+      className="h-12 w-full rounded-xl"
+      onClick={() => (window.history.length > 1 ? router.back() : router.push("/jobs"))}
+    >
       ย้อนกลับ
     </Button>
   );
@@ -130,26 +159,32 @@ function BackButton() {
 
 export function JobDetailBody({
   job,
+  isAdmin,
   onAttachmentsChange,
   onJobChange,
   onReload,
 }: {
   job: JobDetail;
+  /** แอดมินเปิดดูงานของบริษัทใดก็ได้ (ดู/พิมพ์แชท/ย้ายบริษัท แต่เปลี่ยนสถานะงานไม่ได้) */
+  isAdmin: boolean;
   onAttachmentsChange: (next: JobAttatch[]) => void;
   /** เปลี่ยนสถานะสำเร็จ ได้รายละเอียดงานล่าสุด */
   onJobChange: (job: JobDetail) => void;
   onReload: () => void;
 }) {
   const [fullOpen, setFullOpen] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
   const [now] = useState(() => Date.now());
-  const step = currentStep(job.statusId);
+  const step = currentStep(job);
   const cancelled = step === -1;
+  const rejected = job.statusId === STATUS_REJECTED;
+  const rejection = rejected ? [...job.timeline].reverse().find((e) => e.statusId === STATUS_REJECTED) : undefined;
   const tone = TONES[STATUS_TONE[job.statusCode] ?? "muted"];
   const location = job.address ?? job.branchName ?? job.branchCode;
 
   // SLA: เวลาแจ้งงานในฐานข้อมูลเป็นเวลาท้องถิ่น (อ่านเป็น UTC) จึงเทียบกับเวลาปัจจุบันของเครื่องในกรอบเดียวกัน
   const sla = job.priority?.slaHours ?? null;
-  const showSla = sla !== null && !job.closed;
+  const showSla = sla !== null && !job.closed && !rejected;
   const remainingMs = showSla
     ? new Date(job.opsRequestedAt ?? job.requestedAt).getTime() + sla * 3600_000 - (now - new Date().getTimezoneOffset() * 60_000)
     : 0;
@@ -191,6 +226,28 @@ export function JobDetailBody({
           <AlertTriangleIcon className="size-4 shrink-0" />
           งานนี้ถูกยกเลิกแล้ว
         </div>
+      ) : rejected ? (
+        <section className="space-y-2 rounded-2xl bg-danger/10 p-4 text-danger">
+          <p className="flex items-center gap-1.5 text-sm font-medium">
+            <AlertTriangleIcon className="size-4 shrink-0" />
+            {isAdmin ? "บริษัทนี้ปฏิเสธงาน" : "งานนี้ถูกปฏิเสธแล้ว"}
+          </p>
+          <p className="text-xs">
+            {isAdmin
+              ? "เปลี่ยนบริษัทเพื่อจ่ายงานให้บริษัทอื่น"
+              : "รอแอดมินจ่ายงานให้บริษัทอื่น งานจะหายจากรายการของคุณเมื่อแอดมินย้ายบริษัทแล้ว"}
+          </p>
+          {rejection?.note && (
+            <p className="rounded-lg bg-card px-3 py-2 text-sm whitespace-pre-line text-foreground">
+              เหตุผล: {rejection.note}
+            </p>
+          )}
+          {rejection && (
+            <p className="text-xs opacity-80">
+              {[rejection.actorName, dateTimeFormat.format(new Date(rejection.at))].filter(Boolean).join(" · ")}
+            </p>
+          )}
+        </section>
       ) : (
         <section className="rounded-2xl border bg-card p-4 shadow-sm">
           <h3 className="mb-3 text-sm font-medium text-muted-foreground">สถานะการดำเนินการ</h3>
@@ -227,14 +284,86 @@ export function JobDetailBody({
         )}
       </section>
 
+      <TeamCard team={job.team} />
+
+      <JobFiles jobId={job.id} attachments={job.attachments} />
+
       <JobChat jobId={job.id} />
 
       <JobActions job={job} onChanged={onJobChange} onReload={onReload} />
 
+      {isAdmin && REASSIGNABLE_STATUSES.includes(job.statusId) && (
+        <Button variant="outline" className="h-12 w-full rounded-xl" onClick={() => setReassignOpen(true)}>
+          เปลี่ยนบริษัทผู้รับเหมา
+        </Button>
+      )}
+
       <BackButton />
 
       <FullDetailDialog job={job} open={fullOpen} onOpenChange={setFullOpen} />
+
+      <ReassignDialog
+        job={reassignOpen ? { id: job.id, jobCode: job.jobCode, jobType: job.jobType, venderCode: job.venderCode } : null}
+        onClose={() => setReassignOpen(false)}
+        onDone={onReload}
+        onStale={onReload}
+      />
     </div>
+  );
+}
+
+const TEAM_ROLE_LABEL: Record<JobTeamMember["role"], string> = {
+  contractor: "ผู้รับเหมา",
+  head: "หัวหน้า",
+  sub_contractor: "ผู้รับเหมาช่วง",
+  admin: "แอดมิน",
+};
+
+/** ป้ายขวาของแต่ละแถวในทีมรับผิดชอบ */
+const TEAM_BADGE: Record<JobTeamMember["kind"], { label: string; className: string }> = {
+  accepted: { label: "รับงานแล้ว", className: "bg-success-soft text-success" },
+  assigned: { label: "รับมอบหมาย", className: "bg-sub-accent/10 text-sub-accent" },
+};
+
+/**
+ * การ์ด "ทีมรับผิดชอบ" (Figma): รายการผู้ที่รับผิดชอบงานนี้ทีละแถว — คนที่รับงาน, ผู้รับเหมาช่วงที่ถูกมอบหมาย
+ * ต่อไปผู้รับเหมาช่วงต่างบริษัทก็จะต่อท้ายรายการนี้
+ */
+function TeamCard({ team }: { team: JobTeamMember[] }) {
+  return (
+    <section className="space-y-3">
+      <h3 className="px-1 text-sm font-medium text-muted-foreground">ทีมรับผิดชอบ</h3>
+      <div className="rounded-2xl border bg-card p-4 shadow-sm">
+        {team.length === 0 ? (
+          <p className="text-sm text-muted-foreground">ยังไม่มีผู้รับผิดชอบ</p>
+        ) : (
+          <ul className="space-y-3.5">
+            {team.map((m) => {
+              const badge = TEAM_BADGE[m.kind];
+              return (
+                <li key={m.userId} className="flex items-center gap-3">
+                  <span
+                    aria-hidden
+                    className="grid size-9 shrink-0 place-items-center rounded-full bg-brand/10 text-sm font-medium text-brand"
+                  >
+                    {Array.from(m.name.trim()).slice(0, 2).join("") || "?"}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{m.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {[m.companyName, TEAM_ROLE_LABEL[m.role]].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
+                    {badge.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }
 

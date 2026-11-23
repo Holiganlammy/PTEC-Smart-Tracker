@@ -4,29 +4,23 @@ import { Repository } from 'typeorm';
 import { JobMessage } from '../model/job-message.model';
 import { RoleId } from '../model/role.model';
 import { User } from '../model/user.model';
-import type {
-  JobMessageItem,
-  JobMessageList,
-  MessageSenderRole,
-} from '../type/job-message.type';
+import type { JobMessageItem, JobMessageList } from '../type/job-message.type';
 import { JobService } from './job.service';
-import { chatPermission, type ChatBlockReason } from './job-permission';
+import {
+  chatPermission,
+  roleCode,
+  type ChatBlockReason,
+} from './job-permission';
 
 /** ดึงข้อความครั้งแรก/ครั้งเดียวสูงสุดกี่ข้อความ */
 const PAGE_SIZE = 200;
 
 const BLOCKED_TEXT: Record<ChatBlockReason, string> = {
   closed: 'งานนี้ปิดแล้ว ส่งข้อความเพิ่มไม่ได้',
+  rejected: 'งานนี้ถูกปฏิเสธแล้ว รอแอดมินจ่ายงานให้บริษัทอื่น ส่งข้อความไม่ได้',
   no_owner_yet: 'งานนี้ยังไม่มีผู้รับงาน ส่งข้อความได้หลังมีผู้รับงานแล้ว',
   not_owner:
     'เฉพาะผู้ที่รับงานนี้เท่านั้นที่ส่งข้อความได้ (คุณดูได้อย่างเดียว)',
-};
-
-const ROLE_CODE: Record<number, MessageSenderRole> = {
-  [RoleId.CONTRACTOR]: 'contractor',
-  [RoleId.HEAD]: 'head',
-  [RoleId.SUB_CONTRACTOR]: 'sub_contractor',
-  [RoleId.ADMIN]: 'admin',
 };
 
 interface MessageRow {
@@ -55,7 +49,7 @@ export class JobMessageService {
       senderName:
         [row.firstName, row.lastName].filter(Boolean).join(' ') ||
         'ไม่ทราบชื่อ',
-      senderRole: ROLE_CODE[Number(row.senderRoleId)] ?? 'contractor',
+      senderRole: roleCode(row.senderRoleId),
       body: row.body,
       createdAt: new Date(row.createdAt).toISOString(),
       mine: String(row.senderId) === me,
@@ -85,6 +79,13 @@ export class JobMessageService {
       ])
       .where('m.jobId = :jobId', { jobId: job.id })
       .limit(PAGE_SIZE);
+
+    // บริษัทเห็นเฉพาะข้อความในช่วงที่งานเป็นของบริษัทตัวเอง (งานที่ถูกย้ายมา ไม่เห็นแชทของบริษัทเดิม) — แอดมินเห็นทั้งหมด
+    if (Number(user.roleId) !== Number(RoleId.ADMIN)) {
+      qb.andWhere('(m.venderCode = :vender OR m.venderCode IS NULL)', {
+        vender: job.venderCode,
+      });
+    }
 
     let rows: MessageRow[];
     if (after !== undefined) {
@@ -117,6 +118,7 @@ export class JobMessageService {
       jobId: job.id,
       senderId: user.id,
       senderRoleId: Number(user.roleId),
+      venderCode: job.venderCode,
       body,
     });
     const id = String(res.identifiers[0].id);
