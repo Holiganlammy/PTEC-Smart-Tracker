@@ -92,6 +92,17 @@ const UPLOADERS: number[] = [
   Number(RoleId.SUB_CONTRACTOR),
 ];
 
+/** header ตอนส่งตัวไฟล์แนบ (ใช้ร่วมกันทุก endpoint ที่ส่งไฟล์ของงาน) */
+export function fileResponseHeaders(mime: string): Record<string, string> {
+  return {
+    'Content-Type': mime,
+    'Content-Disposition': 'inline',
+    // ไฟล์จาก OPS เป็นของนอกระบบ: ห้ามเบราว์เซอร์เดาชนิดเอง
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=300',
+  };
+}
+
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_FILES_PER_REQUEST = 5;
 const MAX_FILES_PER_KIND = 20;
@@ -230,15 +241,26 @@ export class JobAttatchService {
     }
   }
 
-  /** จำนวนไฟล์ที่ยังไม่ถูกลบของงานในขั้นนั้น */
-  countLive(jobId: string, kind: string): Promise<number> {
-    return this.attatches
+  /**
+   * จำนวนไฟล์ที่ยังไม่ถูกลบของงานในขั้นนั้น
+   * afterRework = นับเฉพาะที่แนบหลังงานถูกตีกลับให้แก้ไขครั้งล่าสุด (ไม่เคยถูกตีกลับ = นับทั้งหมด)
+   * เทียบเวลาใน SQL ทั้งคู่ ไม่ส่งเวลาผ่าน driver (เวลาในฐานข้อมูลเป็นเวลาท้องถิ่นไม่มี timezone)
+   */
+  countLive(jobId: string, kind: string, afterRework = false): Promise<number> {
+    const qb = this.attatches
       .createQueryBuilder('a')
       .where('a.jobId = :jobId AND a.kind = :kind AND a.deletedAt IS NULL', {
         jobId,
         kind,
-      })
-      .getCount();
+      });
+    if (afterRework) {
+      qb.andWhere(
+        `a.createdAt >= ISNULL((SELECT MAX(l.created_at) FROM dbo.Jobs_Logs l
+                                 WHERE l.job_id = :jobId AND l.action = :rework), '19000101')`,
+        { rework: JobLogAction.REWORK },
+      );
+    }
+    return qb.getCount();
   }
 
   /** กันแนบเกินจำนวนสูงสุดต่อขั้น */
@@ -358,8 +380,10 @@ export class JobAttatchService {
     if (!row || row.deletedAt) throw new NotFoundException('ไม่พบไฟล์');
 
     // รูปที่บริษัทอื่นอัปโหลดไว้ (งานถูกย้ายมาให้บริษัทนี้) ไม่ให้เปิด — แอดมินเปิดได้
+    // ยกเว้นรูปขั้น "แจ้งงาน" (report) ซึ่งทุกคนเห็นได้เหมือนใน list() — ของงานย่อยคือรูปที่ผู้รับเหมาหลักแนบตอนมอบหมาย
     if (
       row.source === 'strack' &&
+      row.kind !== 'report' &&
       row.uploadedBy &&
       !this.isUnscoped(user, job)
     ) {

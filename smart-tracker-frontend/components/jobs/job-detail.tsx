@@ -5,14 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangleIcon,
-  CheckIcon,
   ChevronRightIcon,
   ClockIcon,
   MapPinIcon,
   PhoneIcon,
+  RotateCcwIcon,
   UserIcon,
   UserPlusIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,47 +29,20 @@ import {
   type JobDetail,
   type JobHistoryRelation,
   type JobTeamMember,
-  type JobTimelineEvent,
 } from "@/lib/api";
 import { JobActions } from "./job-actions";
 import { JobChat } from "./job-chat";
 import { JobFiles } from "./job-files";
-import { JobPhotos } from "./job-photos";
 import { STATUS_TONE, TONES } from "./job-list";
-import { DEFAULT_DUE_TIME, formatSubDue, SubJobsCard } from "./job-subjobs";
+import { currentStep, formatDuration, Stepper, Timeline } from "./job-timeline";
+import { SubJobsCard } from "./job-subjobs";
+import { dueRemainingMs as subDueRemainingMs, formatSubDue, subStatusOf } from "./sub-job-format";
 import { useJob } from "./use-job";
 
-/** ขั้นตอนของงาน (ตรงกับแถบสถานะใน Figma) — statuses คือรหัสสถานะ (Job_Status) ที่อยู่ในขั้นนั้น */
-const STEPS = [
-  // kind = ชนิดรูปของขั้นนี้ (แจ้งงาน = รูปจาก OPS, ขั้นอื่นอัปโหลดจากระบบเรา)
-  { label: "แจ้งงาน", title: "แจ้งงานผู้รับเหมา", statuses: [2], kind: "report" },
-  { label: "รับงาน", title: "ยืนยันรับงาน", statuses: [3], kind: "accepted" },
-  { label: "ดำเนินการ", title: "กำลังดำเนินการ", statuses: [4, 5], kind: "progress" },
-  { label: "ส่งงาน", title: "ส่งงาน", statuses: [6, 7], kind: "completed" },
-] as const;
-
-const STATUS_COMPLETED = 7;
-const STATUS_CANCELLED = 9;
 const STATUS_REJECTED = 10;
 
 /** สถานะที่แอดมินย้ายงานไปให้บริษัทอื่นได้ (ตรงกับฝั่ง backend: ก่อนส่งมอบ + งานที่ถูกปฏิเสธ) */
 const REASSIGNABLE_STATUSES = [2, 3, 4, 5, STATUS_REJECTED];
-
-const stepOf = (statusId: number) => STEPS.findIndex((s) => (s.statuses as readonly number[]).includes(statusId));
-
-/** ขั้นปัจจุบัน (0–3); STEPS.length = เสร็จครบทุกขั้น; -1 = ยกเลิก */
-function currentStep(job: JobDetail): number {
-  if (job.statusId === STATUS_CANCELLED) return -1;
-  if (job.statusId === STATUS_COMPLETED) return STEPS.length;
-  const i = stepOf(job.statusId);
-  if (i !== -1) return i;
-  // สถานะนอกแถบขั้นตอน (เช่น ปฏิเสธงาน): ใช้ขั้นล่าสุดที่งานเคยไปถึง
-  for (const e of [...job.timeline].reverse()) {
-    const k = stepOf(e.statusId);
-    if (k !== -1) return k;
-  }
-  return 0;
-}
 
 const dateTimeFormat = new Intl.DateTimeFormat("th-TH", {
   day: "numeric",
@@ -91,19 +63,6 @@ const dateOnlyFormat = new Intl.DateTimeFormat("th-TH", {
 /** SLA เป็นชั่วโมง → ข้อความ (หารด้วย 24 ลงตัวตั้งแต่ 2 วันขึ้นไปแสดงเป็นวัน) */
 export function formatSla(hours: number) {
   return hours >= 48 && hours % 24 === 0 ? `${hours / 24} วัน` : `${hours} ชั่วโมง`;
-}
-
-/** เวลาที่เหลือ/เกิน SLA เป็นข้อความ เช่น "2 ชม. 15 นาที" */
-function formatDuration(ms: number) {
-  const totalMin = Math.floor(Math.abs(ms) / 60000);
-  const days = Math.floor(totalMin / 1440);
-  const hours = Math.floor((totalMin % 1440) / 60);
-  const minutes = totalMin % 60;
-  const parts = [];
-  if (days > 0) parts.push(`${days} วัน`);
-  if (hours > 0) parts.push(`${hours} ชม.`);
-  if (days === 0) parts.push(`${minutes} นาที`);
-  return parts.join(" ");
 }
 
 /** หน้าติดตามสถานะงาน (ผู้รับเหมา/หัวหน้า/ผู้รับเหมาช่วง) */
@@ -181,7 +140,9 @@ export function JobDetailBody({
   const cancelled = step === -1;
   const rejected = job.statusId === STATUS_REJECTED;
   const rejection = rejected ? [...job.timeline].reverse().find((e) => e.statusId === STATUS_REJECTED) : undefined;
-  const tone = TONES[STATUS_TONE[job.statusCode] ?? "muted"];
+  // งานที่ถูกตีกลับให้แก้ไข: สถานะยังเป็นกำลังดำเนินการ แต่แสดงเป็น "กำลังแก้ไข" (สีแดง)
+  const reworkStatus = job.rework ? subStatusOf(job.statusCode, job.statusName, true) : null;
+  const tone = TONES[reworkStatus?.tone ?? STATUS_TONE[job.statusCode] ?? "muted"];
   const location = job.address ?? job.branchName ?? job.branchCode;
 
   // SLA: เวลาแจ้งงานในฐานข้อมูลเป็นเวลาท้องถิ่น (อ่านเป็น UTC) จึงเทียบกับเวลาปัจจุบันของเครื่องในกรอบเดียวกัน
@@ -196,10 +157,7 @@ export function JobDetailBody({
   // งานย่อย: ไม่มี SLA ของตัวเอง — นับถอยหลังถึงกำหนดเสร็จที่ผู้มอบหมายตั้ง (วันที่ + เวลา; งานเก่าไม่มีเวลา = 18:00)
   const subDueDate = origin?.dueDate ?? null;
   const showDue = subDueDate !== null && !job.closed && !rejected && !cancelled;
-  const dueRemainingMs = showDue
-    ? new Date(`${subDueDate}T${origin?.dueTime ?? DEFAULT_DUE_TIME}:00Z`).getTime() -
-      (now - new Date().getTimezoneOffset() * 60_000)
-    : 0;
+  const dueRemainingMs = showDue ? subDueRemainingMs(subDueDate, origin?.dueTime, now) : 0;
 
   return (
     <div className="space-y-4 p-4">
@@ -215,6 +173,25 @@ export function JobDetailBody({
               <span className="block text-xs opacity-80">กำหนดเสร็จ {formatSubDue(origin.dueDate, origin.dueTime)}</span>
             )}
           </p>
+        </section>
+      )}
+
+      {/* งานย่อยที่ถูกหัวหน้าของผู้รับเหมาหลักตีกลับ: บอกสิ่งที่ต้องแก้ไว้บนสุด */}
+      {job.rework && (
+        <section className="space-y-2 rounded-2xl bg-danger/10 p-4 text-danger">
+          <p className="flex items-center gap-1.5 text-sm font-medium">
+            <RotateCcwIcon className="size-4 shrink-0" />
+            ผู้รับเหมาหลักตีกลับให้แก้ไข{job.rework.count > 1 ? ` (ครั้งที่ ${job.rework.count})` : ""}
+          </p>
+          {job.rework.note && (
+            <p className="rounded-lg bg-card px-3 py-2 text-sm whitespace-pre-line text-foreground">
+              สิ่งที่ต้องแก้ไข: {job.rework.note}
+            </p>
+          )}
+          <p className="text-xs opacity-80">
+            {[job.rework.byName, dateTimeFormat.format(new Date(job.rework.at))].filter(Boolean).join(" · ")}
+          </p>
+          <p className="text-xs">แก้ไขให้เรียบร้อย แล้วกด “ส่งงานที่แก้ไขแล้ว” พร้อมแนบรูปหลังแก้ไขใหม่</p>
         </section>
       )}
 
@@ -277,9 +254,11 @@ export function JobDetailBody({
             {isAdmin ? "บริษัทนี้ปฏิเสธงาน" : "งานนี้ถูกปฏิเสธแล้ว"}
           </p>
           <p className="text-xs">
-            {isAdmin
-              ? "เปลี่ยนบริษัทเพื่อจ่ายงานให้บริษัทอื่น"
-              : "รอแอดมินจ่ายงานให้บริษัทอื่น งานจะหายจากรายการของคุณเมื่อแอดมินย้ายบริษัทแล้ว"}
+            {origin
+              ? "งานย่อยนี้ถูกตัดออกจากงานของผู้รับเหมาหลักแล้ว ผู้รับเหมาหลักจะมอบหมายให้บริษัทอื่นเองถ้ายังต้องการ"
+              : isAdmin
+                ? "เปลี่ยนบริษัทเพื่อจ่ายงานให้บริษัทอื่น"
+                : "รอแอดมินจ่ายงานให้บริษัทอื่น งานจะหายจากรายการของคุณเมื่อแอดมินย้ายบริษัทแล้ว"}
           </p>
           {rejection?.note && (
             <p className="rounded-lg bg-card px-3 py-2 text-sm whitespace-pre-line text-foreground">
@@ -313,7 +292,7 @@ export function JobDetailBody({
       {/* สถานะปัจจุบัน + SLA */}
       <section className={`space-y-1.5 rounded-2xl p-4 ${tone.chip}`}>
         <p className="text-sm font-medium">สถานะปัจจุบัน</p>
-        <p className="font-heading text-2xl font-semibold">{job.statusName}</p>
+        <p className="font-heading text-2xl font-semibold">{reworkStatus?.label ?? job.statusName}</p>
         {showSla && (
           <p className="flex items-center gap-1.5 text-sm">
             <ClockIcon className="size-4" />
@@ -347,7 +326,8 @@ export function JobDetailBody({
 
       <JobActions job={job} onChanged={onJobChange} onReload={onReload} />
 
-      {isAdmin && REASSIGNABLE_STATUSES.includes(job.statusId) && (
+      {/* งานย่อยย้ายบริษัทไม่ได้ (ผู้รับเหมาหลักมอบหมายใหม่เอง) — server กันซ้ำ */}
+      {isAdmin && job.parentJobId === null && REASSIGNABLE_STATUSES.includes(job.statusId) && (
         <Button variant="outline" className="h-12 w-full rounded-xl" onClick={() => setReassignOpen(true)}>
           เปลี่ยนบริษัทผู้รับเหมา
         </Button>
@@ -429,138 +409,6 @@ function InfoRow({ icon, children }: { icon: React.ReactNode; children: React.Re
       <span className="min-w-0 flex-1">{children}</span>
     </div>
   );
-}
-
-/** แถบ 4 ขั้น: ✓ = ผ่านแล้ว, เลข = ขั้นปัจจุบัน, วงว่าง = ยังไม่ถึง */
-function Stepper({ step }: { step: number }) {
-  return (
-    <ol className="flex items-start">
-      {STEPS.map((s, i) => {
-        const done = i < step;
-        const current = i === step;
-        return (
-          <li key={s.label} className="relative flex flex-1 flex-col items-center gap-1.5">
-            {i > 0 && (
-              <span
-                aria-hidden
-                className={`absolute top-3.5 right-1/2 h-0.5 w-full -translate-y-1/2 ${
-                  i <= step ? (i === step ? "bg-warning" : "bg-success") : "bg-border"
-                }`}
-              />
-            )}
-            <span
-              className={`relative z-10 grid size-7 place-items-center rounded-full border-2 text-xs font-semibold ${
-                done
-                  ? "border-success bg-success text-white"
-                  : current
-                    ? "border-warning bg-warning text-white"
-                    : "border-border bg-card text-muted-foreground"
-              }`}
-            >
-              {done ? <CheckIcon className="size-4" /> : current ? i + 1 : ""}
-            </span>
-            <span className={`text-xs ${current ? "font-medium text-warning" : "text-muted-foreground"}`}>
-              {s.label}
-            </span>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-/** ประวัติแต่ละขั้น: ผู้ทำ + เวลา (จาก Jobs_Logs) ขั้นที่ยังไม่ถึงแสดงว่ายังไม่ถึง */
-function Timeline({
-  job,
-  step,
-  onAttachmentsChange,
-}: {
-  job: JobDetail;
-  step: number;
-  onAttachmentsChange: (next: JobAttatch[]) => void;
-}) {
-  return (
-    <ol className="space-y-5">
-      {STEPS.map((s, i) => {
-        const done = i < step;
-        const current = i === step;
-        const event = lastEvent(job.timeline, s.statuses);
-        // งานที่นำเข้าก่อนมีประวัติ: ขั้นแรกใช้เวลาแจ้งงานแทน
-        const at = event?.at ?? (i === 0 ? job.requestedAt : null);
-
-        return (
-          <li key={s.label} className="flex gap-3">
-            <span
-              className={`mt-0.5 grid size-6 shrink-0 place-items-center rounded-full border-2 ${
-                done
-                  ? "border-success bg-success text-white"
-                  : current
-                    ? "border-warning bg-warning text-white"
-                    : "border-border bg-card"
-              }`}
-            >
-              {done && <CheckIcon className="size-3.5" />}
-              {current && <WrenchIcon className="size-3" />}
-            </span>
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <p className={`text-sm font-medium ${!done && !current ? "text-muted-foreground" : ""}`}>
-                {s.title}
-              </p>
-              {done || current ? (
-                <>
-                  {(event?.actorName || at) && (
-                    <p className="text-xs text-muted-foreground">
-                      {event?.actorName && `${ACTOR_PREFIX[event.statusId] ?? "โดย"} ${event.actorName}`}
-                      {event?.actorName && at ? " · " : ""}
-                      {at && dateTimeFormat.format(new Date(at))}
-                    </p>
-                  )}
-                  {event?.note && (
-                    <p className="mt-1.5 rounded-lg bg-muted px-3 py-2 text-xs">หมายเหตุ: {event.note}</p>
-                  )}
-                  {s.kind === "completed" && (job.repairedAt || job.repairDetails) && (
-                    <div className="mt-1.5 space-y-1 rounded-lg bg-muted px-3 py-2 text-xs">
-                      {job.repairedAt && <p>ซ่อมเสร็จเมื่อ {dateTimeFormat.format(new Date(job.repairedAt))}</p>}
-                      {job.repairDetails && <p className="whitespace-pre-line">รายละเอียดการซ่อม: {job.repairDetails}</p>}
-                    </div>
-                  )}
-                  <JobPhotos
-                    jobId={job.id}
-                    kind={s.kind}
-                    stepTitle={s.title}
-                    attachments={job.attachments}
-                    uploadable={s.kind !== "report" && job.uploadableKinds.includes(s.kind)}
-                    onChange={onAttachmentsChange}
-                  />
-                </>
-              ) : (
-                <>
-                  <p className="text-xs text-muted-foreground">ยังไม่ถึงขั้นตอนนี้</p>
-                  {s.kind !== "report" && (
-                    <p className="mt-2.5 text-xs text-muted-foreground">แนบรูปได้เมื่อถึงขั้นตอนนี้</p>
-                  )}
-                </>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-/** คำนำหน้าชื่อผู้ทำ ตามสถานะที่งานเปลี่ยนไปเป็น — ให้อ่านแล้วรู้ว่าคนนี้ทำอะไร ไม่ใช่แค่ชื่อเฉย ๆ */
-const ACTOR_PREFIX: Record<number, string> = {
-  2: "ส่งให้ผู้รับเหมาโดย",
-  3: "รับงานโดย",
-  4: "ดำเนินการโดย",
-  5: "แจ้งรออะไหล่โดย",
-  6: "ส่งงานโดย",
-  7: "ปิดงานโดย",
-};
-
-function lastEvent(timeline: JobTimelineEvent[], statuses: readonly number[]) {
-  return [...timeline].reverse().find((e) => statuses.includes(e.statusId));
 }
 
 /** หน้าต่างรายละเอียดงานฉบับเต็ม */

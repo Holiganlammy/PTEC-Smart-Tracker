@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { PlusIcon, SendIcon, UserPlusIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIcon,
+  ClipboardCheckIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  SendIcon,
+  UserPlusIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { VenderCombobox } from "@/components/admin/vender-combobox";
+import { DatePicker, toDateStr, toTimeStr, useNow } from "@/components/date-picker";
+import { TimePicker } from "@/components/time-picker";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -13,51 +23,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, type JobDetail, type SubJob, type Vender } from "@/lib/api";
 import { TONES } from "./job-list";
 import { PhotoPicker } from "./photo-picker";
+import { SubJobHistoryDialog } from "./sub-job-history";
+import { DEFAULT_DUE_TIME, formatSubDue, isCutOff, subStatusOf } from "./sub-job-format";
 
-/** ป้ายสถานะงานย่อยตาม Figma (ชื่อเรียกต่างจากสถานะงานปกติ เช่น แจ้งงาน → รอตอบรับ, ส่งมอบ → รอตรวจรับ) */
-const SUB_STATUS: Record<string, { label: string; tone: keyof typeof TONES }> = {
-  new: { label: "รอตอบรับ", tone: "brand" },
-  accepted: { label: "รับงานแล้ว", tone: "brand" },
-  in_progress: { label: "กำลังดำเนินการ", tone: "warning" },
-  waiting_parts: { label: "รออะไหล่", tone: "warning" },
-  delivered: { label: "รอตรวจรับ", tone: "sub" },
-  completed: { label: "เสร็จสิ้น", tone: "success" },
-  rejected: { label: "ปฏิเสธงาน", tone: "danger" },
-};
-
-const dueFormat = new Intl.DateTimeFormat("th-TH", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC", // กำหนดเสร็จเก็บเป็นวันที่ล้วน ไม่มีเวลา/timezone
-});
-
-/** เวลากำหนดเสร็จของงานย่อยที่ไม่ได้ระบุ (งานย่อยเก่าก่อนมีช่องเวลา) ถือเป็นเลิกงาน 18:00 น. (ตาม Figma) */
-export const DEFAULT_DUE_TIME = "18:00";
-
-/** กำหนดเสร็จของงานย่อย เช่น "25 พ.ย. 69 ก่อน 14:00 น." (time เป็น HH:mm) */
-export function formatSubDue(date: string, time?: string | null) {
-  return `${dueFormat.format(new Date(`${date}T00:00:00Z`))} ก่อน ${time ?? DEFAULT_DUE_TIME} น.`;
-}
-
-/** วันนี้ตามนาฬิกาเครื่อง YYYY-MM-DD (ใช้เป็นวันที่เร็วที่สุดที่เลือกได้) */
-function todayLocal() {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/** เวลาตอนนี้ตามนาฬิกาเครื่อง HH:mm (ถ้าเลือกกำหนดเสร็จเป็นวันนี้ ต้องเป็นเวลาหลังจากนี้) */
-function nowLocalTime() {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+/** ปัญหาของกำหนดเสร็จ (null = ใช้ได้): ต้องหลังเวลาปัจจุบัน — เซิร์ฟเวอร์ตรวจซ้ำอีกชั้น */
+function dueProblem(date: string, time: string, now: Date): string | null {
+  if (date === "" || time === "") return "กรุณาเลือกวันและเวลากำหนดเสร็จ";
+  const today = toDateStr(now);
+  const nowTime = toTimeStr(now);
+  if (date < today) return "วันที่กำหนดเสร็จต้องไม่ย้อนหลัง";
+  if (date === today && time <= nowTime) return `ถ้าเลือกวันนี้ ต้องเป็นเวลาหลัง ${nowTime} น.`;
+  return null;
 }
 
 type Props = {
@@ -71,11 +52,23 @@ type Props = {
 export function SubJobsCard({ job, onChanged, onReload }: Props) {
   const [adding, setAdding] = useState(false);
   const [cancelling, setCancelling] = useState<SubJob | null>(null);
+  const [viewing, setViewing] = useState<SubJob | null>(null);
+  // ซ่อนงานย่อยที่ถูกปฏิเสธ/ยกเลิก (ตัดออกจากงานหลักแล้ว) — ค่าเริ่มต้นแสดงทั้งหมด
+  const [hideCutOff, setHideCutOff] = useState(false);
+  const visible = job.subJobs.length > 0 || job.canAddSubJob;
 
-  if (job.subJobs.length === 0 && !job.canAddSubJob) return null;
+  // มาจากปุ่ม "ไปจัดการงานย่อย" ในหน้าส่งงาน (/jobs/:id#subjobs) → เลื่อนมาที่การ์ดนี้หลังโหลดเสร็จ
+  const scrollRef = useCallback((el: HTMLElement | null) => {
+    if (el && window.location.hash === "#subjobs") el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  if (!visible) return null;
+  const toInspect = job.subJobs.filter((s) => s.canInspect).length;
+  const cutOffCount = job.subJobs.filter(isCutOff).length;
+  const shown = hideCutOff ? job.subJobs.filter((s) => !isCutOff(s)) : job.subJobs;
 
   return (
-    <section className="space-y-3 rounded-2xl border bg-card p-4 shadow-sm">
+    <section ref={scrollRef} id="subjobs" className="scroll-mt-4 space-y-3 rounded-2xl border bg-card p-4 shadow-sm">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-heading text-base font-medium">มอบหมายงานผู้รับเหมา</h3>
         {job.canAddSubJob && (
@@ -86,16 +79,35 @@ export function SubJobsCard({ job, onChanged, onReload }: Props) {
         )}
       </div>
 
+      {toInspect > 0 && (
+        <p className="flex items-start gap-2 rounded-xl bg-sub-accent/10 px-3 py-2.5 text-xs text-sub-accent">
+          <ClipboardCheckIcon className="mt-0.5 size-4 shrink-0" />
+          มีงานย่อยส่งมาให้ตรวจรับ {toInspect} งาน — กด “ตรวจรับงาน” เพื่อดูรูปและรายละเอียด แล้วเลือกตรวจรับผ่านหรือตีกลับให้แก้ไข
+        </p>
+      )}
+
+      {cutOffCount > 0 && (
+        <Label className="cursor-pointer gap-2 text-xs font-normal text-muted-foreground">
+          <Checkbox checked={hideCutOff} onCheckedChange={(checked) => setHideCutOff(checked)} />
+          ซ่อนงานที่ถูกปฏิเสธ/ยกเลิก ({cutOffCount})
+        </Label>
+      )}
+
       {job.subJobs.length === 0 ? (
         <p className="py-2 text-sm text-muted-foreground">
           ยังไม่ได้มอบหมายงานต่อให้ผู้รับเหมารายย่อย กด “เพิ่มผู้รับเหมา” เพื่อส่งงานย่อยให้บริษัทอื่น
         </p>
+      ) : shown.length === 0 ? (
+        <p className="py-2 text-sm text-muted-foreground">
+          ซ่อนงานที่ถูกปฏิเสธ/ยกเลิกไว้ {cutOffCount} รายการ — ไม่มีงานย่อยที่ยังทำอยู่
+        </p>
       ) : (
         <ul className="divide-y">
-          {job.subJobs.map((s) => {
-            const status = SUB_STATUS[s.statusCode] ?? { label: s.statusName, tone: "muted" as const };
+          {shown.map((s) => {
+            const status = subStatusOf(s.statusCode, s.statusName, s.reworking);
+            const cutOff = isCutOff(s);
             return (
-              <li key={s.id} className="space-y-1.5 py-3 first:pt-0 last:pb-0">
+              <li key={s.id} className={`space-y-1.5 py-3 first:pt-0 last:pb-0 ${cutOff ? "opacity-70" : ""}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 space-y-0.5">
                     <p className="text-sm font-medium break-words">{s.venderName ?? s.venderCode}</p>
@@ -106,6 +118,12 @@ export function SubJobsCard({ job, onChanged, onReload }: Props) {
                     </p>
                     {s.dueDate && (
                       <p className="text-xs text-muted-foreground">กำหนดเสร็จ {formatSubDue(s.dueDate, s.dueTime)}</p>
+                    )}
+                    {s.reworkCount > 0 && (
+                      <p className="flex items-center gap-1 text-xs text-danger">
+                        <RotateCcwIcon className="size-3 shrink-0" />
+                        ตีกลับให้แก้ไขแล้ว {s.reworkCount} ครั้ง
+                      </p>
                     )}
                   </div>
                   <span
@@ -119,21 +137,65 @@ export function SubJobsCard({ job, onChanged, onReload }: Props) {
                     {s.scope}
                   </p>
                 )}
-                {s.canCancel && (
-                  <button
-                    type="button"
-                    onClick={() => setCancelling(s)}
-                    className="text-xs font-medium text-danger underline-offset-2 hover:underline"
-                  >
-                    ยกเลิกงานย่อย
-                  </button>
+                {cutOff && (
+                  <p className="text-xs text-muted-foreground">
+                    ตัดออกจากงานหลักแล้ว — ไม่ต้องรอ ส่งงานหลักได้
+                    {s.statusCode === "rejected" && " (ถ้ายังต้องการให้คนอื่นทำ กด “เพิ่มผู้รับเหมา” ใหม่)"}
+                  </p>
                 )}
+                {/* ส่งงานมาแล้วแต่ผู้ใช้ตรวจไม่ได้ (ไม่ใช่เจ้าของงาน/หัวหน้า/แอดมิน) → บอกว่ารอใครอยู่ */}
+                {!s.canInspect && s.statusCode === "delivered" && (
+                  <p className="rounded-lg bg-sub-accent/10 px-2.5 py-1.5 text-xs text-sub-accent">
+                    ส่งงานมาแล้ว รอผู้รับเหมาหลักตรวจรับ
+                  </p>
+                )}
+                <div className="flex items-center justify-between gap-3 pt-0.5">
+                  {/* ตรวจรับ/ตีกลับทำใน modal (ดูรูปและรายละเอียดก่อนตัดสินใจ) — ปุ่มเด่นขึ้นเมื่อรอผู้ใช้ตรวจ */}
+                  {s.canInspect ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 gap-1.5 rounded-lg bg-sub-accent text-xs text-white hover:bg-sub-accent/90"
+                      onClick={() => setViewing(s)}
+                    >
+                      <ClipboardCheckIcon className="size-3.5" />
+                      ตรวจรับงาน
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 rounded-lg text-xs"
+                      onClick={() => setViewing(s)}
+                    >
+                      <ActivityIcon className="size-3.5" />
+                      ติดตามงานย่อย
+                    </Button>
+                  )}
+                  {s.canCancel && (
+                    <button
+                      type="button"
+                      onClick={() => setCancelling(s)}
+                      className="text-xs font-medium text-danger underline-offset-2 hover:underline"
+                    >
+                      ยกเลิกงานย่อย
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}
         </ul>
       )}
 
+      <SubJobHistoryDialog
+        parentId={job.id}
+        sub={viewing}
+        onClose={() => setViewing(null)}
+        onChanged={onChanged}
+        onReload={onReload}
+      />
       <AddSubJobDialog job={adding ? job : null} onClose={() => setAdding(false)} onChanged={onChanged} onReload={onReload} />
       <CancelSubJobDialog
         parent={job}
@@ -190,8 +252,7 @@ function AddSubJobForm({
   const [files, setFiles] = useState<File[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  const [today] = useState(todayLocal);
-  const [nowTime] = useState(nowLocalTime);
+  const now = useNow();
 
   useEffect(() => {
     let cancelled = false;
@@ -209,12 +270,19 @@ function AddSubJobForm({
   // ไม่ให้เลือกบริษัทของตัวเอง
   const options = useMemo(() => venders?.filter((v) => v.venderCode !== job.venderCode) ?? [], [venders, job.venderCode]);
   const target = options.find((v) => v.venderCode === venderCode) ?? null;
-  // วันนี้ต้องเลือกเวลาหลังจากนี้ (เซิร์ฟเวอร์ตรวจซ้ำอีกชั้น)
-  const dueOk = dueDate !== "" && dueTime !== "" && (dueDate > today || (dueDate === today && dueTime > nowTime));
-  const valid = target !== null && scope.trim().length > 0 && dueOk;
+  // กำหนดเสร็จต้องหลังเวลาปัจจุบัน (วันนี้ = เวลาหลังจากนี้)
+  const dueError = dueProblem(dueDate, dueTime, now);
+  const showDueError = dueDate !== "" && dueError !== null;
+  const valid = target !== null && scope.trim().length > 0 && dueError === null;
 
   async function submit() {
     if (!target || !valid) return;
+    // ตรวจกับเวลา ณ ตอนกดอีกครั้ง (now อัปเดตทุก 30 วินาที อาจช้ากว่าจริงเล็กน้อย)
+    const late = dueProblem(dueDate, dueTime, new Date());
+    if (late) {
+      toast.error("กำหนดเสร็จไม่ถูกต้อง", { description: late });
+      return;
+    }
     setBusy(true);
     try {
       const updated = await api.addSubJob(job.id, {
@@ -301,29 +369,26 @@ function AddSubJobForm({
             กำหนดเสร็จงานย่อย <span className="text-danger">*</span>
           </Label>
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,9rem)] gap-2">
-            <Input
+            <DatePicker
               id="sub-due"
-              type="date"
               aria-label="วันที่กำหนดเสร็จ"
               value={dueDate}
-              min={today}
+              onChange={setDueDate}
+              min={toDateStr(now)}
               disabled={busy}
-              aria-invalid={dueDate !== "" && !dueOk}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="h-11"
+              invalid={showDueError}
             />
-            <Input
+            <TimePicker
               id="sub-due-time"
-              type="time"
               aria-label="เวลาที่กำหนดเสร็จ"
               value={dueTime}
+              onChange={setDueTime}
+              after={dueDate === toDateStr(now) ? toTimeStr(now) : undefined}
               disabled={busy}
-              aria-invalid={dueDate !== "" && !dueOk}
-              onChange={(e) => setDueTime(e.target.value)}
-              className="h-11"
+              invalid={showDueError}
             />
           </div>
-          {dueDate !== "" && !dueOk && <p className="text-xs text-danger">กำหนดเสร็จต้องไม่ย้อนหลัง</p>}
+          {showDueError && <p className="text-xs text-danger">{dueError}</p>}
         </div>
 
         <div className="space-y-1.5">
@@ -398,7 +463,8 @@ function CancelSubJobDialog({
         <DialogHeader>
           <DialogTitle className="text-left">ยกเลิกงานย่อยนี้?</DialogTitle>
           <DialogDescription className="text-left">
-            งานย่อยที่ส่งให้ {sub?.venderName ?? sub?.venderCode} จะถูกยกเลิก และบริษัทนั้นจะไม่เห็นงานนี้แล้ว (ยกเลิกได้เฉพาะตอนที่ยังไม่มีผู้ตอบรับ)
+            งานย่อยที่ส่งให้ {sub?.venderName ?? sub?.venderCode} จะถูกยกเลิก และบริษัทนั้นจะไม่เห็นงานนี้แล้ว
+            (ยกเลิกได้เฉพาะตอนที่ยังไม่มีผู้ตอบรับ)
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

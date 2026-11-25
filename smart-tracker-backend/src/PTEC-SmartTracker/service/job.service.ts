@@ -35,20 +35,28 @@ import type {
   JobDetail,
   JobItem,
   JobList,
+  JobRework,
   JobRow,
   JobTeamMember,
   RejectedJobItem,
   JobTimelineEvent,
   JobTypeItem,
   ReviewJobItem,
+  SubJobHistory,
   SubJobItem,
   SubJobOrigin,
 } from '../type/job.type';
-import { JobAttatchService, type StagedFile } from './job-attatch.service';
+import {
+  JobAttatchService,
+  type AccessibleJob,
+  type StagedFile,
+} from './job-attatch.service';
 import {
   canAddSubJob,
   canChangeStatus,
+  isSubJobInspector,
   roleCode,
+  SUB_JOB_CANCELLABLE,
   type JobOwnership,
 } from './job-permission';
 import { VenderService } from './vender.service';
@@ -123,6 +131,20 @@ const REASSIGNABLE = [
 const HIDDEN_FROM_CONTRACTOR = [
   JobStatusId.PENDING_REVIEW,
   JobStatusId.RETURNED,
+];
+
+/** เขตเวลาของผู้ใช้ (ระบบใช้เวลาไทยทั้งหมด ไม่มีเวลาออมแสง) — แปลงเวลาบนนาฬิกาที่ผู้ใช้กรอกเป็นเวลาจริง */
+const LOCAL_TZ_OFFSET = '+07:00';
+
+/** สถานะระหว่างทำงาน — งานย่อยที่ถูกตีกลับจะอยู่ในสถานะเหล่านี้จนกว่าจะส่งงานใหม่ */
+const IN_WORK: number[] = [JobStatusId.IN_PROGRESS, JobStatusId.WAITING_PARTS];
+
+/** งานย่อยที่จบแล้ว (ตรวจรับผ่าน/ยกเลิก) — งานหลักส่งงานได้เมื่องานย่อยทุกรายการอยู่ในสถานะเหล่านี้ */
+const SUB_JOB_DONE: number[] = [
+  JobStatusId.COMPLETED,
+  // ยกเลิก/บริษัทปฏิเสธ = ตัดออกจากงานหลักแล้ว (ยังแสดงในการ์ดได้ แต่ไม่ขวางการส่งงานหลัก)
+  JobStatusId.CANCELLED,
+  JobStatusId.REJECTED,
 ];
 
 /** สถานะที่ยังมอบหมายงานให้ผู้รับเหมาช่วงได้ (ยังไม่ส่งมอบ/ปิดงาน) */
@@ -236,7 +258,11 @@ export class JobService {
     const parentIds = items
       .filter((i) => i.parentJobId === null)
       .map((i) => i.id);
-    const [names, counts] = await Promise.all([
+    // งานย่อยระหว่างทำงาน → ดูว่าถูกตีกลับให้แก้ไขอยู่ไหม (ป้าย "แก้ไขงาน")
+    const inWorkSubIds = items
+      .filter((i) => i.parentJobId !== null && IN_WORK.includes(+i.statusId))
+      .map((i) => String(i.id));
+    const [names, counts, reworks] = await Promise.all([
       this.venderService.getNames(
         rows.map((r) => r.parentVenderCode).filter((c): c is string => !!c),
       ),
@@ -252,6 +278,7 @@ export class JobService {
             .groupBy('c.parentJobId')
             .getRawMany<{ parentJobId: string; n: number }>()
         : Promise.resolve([]),
+      this.getReworks(inWorkSubIds),
     ]);
     const countOf = new Map(
       counts.map((c) => [String(c.parentJobId), Number(c.n)]),
@@ -260,10 +287,63 @@ export class JobService {
       const code = rows[i].parentVenderCode;
       if (item.parentJobId !== null) {
         item.parentVenderName = code ? (names.get(code) ?? null) : null;
+        item.reworking = !!reworks.get(String(item.id))?.last;
       } else {
         item.subJobCount = countOf.get(String(item.id)) ?? 0;
       }
     });
+  }
+
+  /**
+   * ประวัติการตีกลับให้แก้ไขของงาน (จาก Jobs_Logs 'rework' กับ 'delivered' เรียงตามเวลา)
+   *  count = ตีกลับมาแล้วกี่ครั้ง
+   *  last  = การตีกลับครั้งล่าสุดที่ยังไม่ได้ส่งงานใหม่ตามมา (null = ไม่ได้อยู่ระหว่างแก้ไข)
+   * ผู้เรียกต้องเช็กเองว่างานยังอยู่ในสถานะระหว่างทำงาน (IN_WORK)
+   */
+  private async getReworks(
+    jobIds: string[],
+  ): Promise<Map<string, { count: number; last: JobLog | null }>> {
+    const result = new Map<string, { count: number; last: JobLog | null }>();
+    if (jobIds.length === 0) return result;
+    const logs = await this.jobs.manager.find(JobLog, {
+      where: {
+        jobId: In(jobIds),
+        action: In([JobLogAction.REWORK, JobLogAction.DELIVERED]),
+      },
+      order: { id: 'ASC' },
+    });
+    for (const l of logs) {
+      const cur = result.get(String(l.jobId)) ?? { count: 0, last: null };
+      if (l.action === JobLogAction.REWORK) {
+        cur.count += 1;
+        cur.last = l;
+      } else {
+        cur.last = null; // ส่งงานใหม่แล้ว
+      }
+      result.set(String(l.jobId), cur);
+    }
+    return result;
+  }
+
+  /** งานย่อยที่ถูกตีกลับและกำลังแก้ไขอยู่ (แบนเนอร์ในหน้างานของบริษัทรายย่อย) */
+  private async activeRework(
+    jobId: string,
+    statusId: number,
+  ): Promise<JobRework | null> {
+    if (!IN_WORK.includes(Number(statusId))) return null;
+    const info = (await this.getReworks([jobId])).get(String(jobId));
+    if (!info?.last) return null;
+    const by = info.last.actorId
+      ? await this.jobs.manager.findOne(User, {
+          where: { id: info.last.actorId },
+        })
+      : null;
+    return {
+      count: info.count,
+      note: info.last.note,
+      byName: by ? [by.firstName, by.lastName].filter(Boolean).join(' ') : null,
+      at: new Date(info.last.createdAt).toISOString(),
+    };
   }
 
   private applySearch(qb: SelectQueryBuilder<Job>, q?: string) {
@@ -442,24 +522,39 @@ export class JobService {
     });
     const isSubJob = full?.parentJobId != null;
     const canAdd = canAddSubJob(user, ownership, isSubJob);
-    const [timeline, history, attachments, team, subJobs, subJobOrigin] =
-      await Promise.all([
-        this.getTimeline(id, Number(user.roleId) === Number(RoleId.ADMIN)),
-        this.getHistory(user, venderCode, {
-          id,
-          branchCode: row.branchCode,
-          jobType: row.jobType,
-          opsJobDetailId: full?.opsJobDetailId ?? null,
-        }),
-        this.attatchService.list(user, {
-          id,
-          statusId: row.statusId,
-          venderCode,
-        }),
-        this.getTeam(venderCode, ownership),
-        isSubJob ? Promise.resolve([]) : this.getSubJobs(id, canAdd),
-        full && isSubJob ? this.getSubJobOrigin(full) : Promise.resolve(null),
-      ]);
+    const [
+      timeline,
+      history,
+      attachments,
+      team,
+      subJobs,
+      subJobOrigin,
+      rework,
+    ] = await Promise.all([
+      this.getTimeline(id, Number(user.roleId) === Number(RoleId.ADMIN)),
+      this.getHistory(user, venderCode, {
+        id,
+        branchCode: row.branchCode,
+        jobType: row.jobType,
+        opsJobDetailId: full?.opsJobDetailId ?? null,
+      }),
+      this.attatchService.list(user, {
+        id,
+        statusId: row.statusId,
+        venderCode,
+      }),
+      this.getTeam(venderCode, ownership),
+      isSubJob
+        ? Promise.resolve([])
+        : this.getSubJobs(id, {
+            canManage: canAdd,
+            canInspect: isSubJobInspector(user, ownership),
+          }),
+      full && isSubJob ? this.getSubJobOrigin(full) : Promise.resolve(null),
+      isSubJob
+        ? this.activeRework(id, Number(row.statusId))
+        : Promise.resolve(null),
+    ]);
 
     return {
       ...this.toItem(row),
@@ -484,16 +579,18 @@ export class JobService {
       subJobs,
       canAddSubJob: canAdd,
       subJobOrigin,
+      rework,
     };
   }
 
   /**
-   * งานย่อยของงานแม่ (ไม่รวมที่ยกเลิก) เรียงตามที่มอบหมาย — พร้อมชื่อบริษัทและคนที่กดรับ
+   * งานย่อยของงานแม่ทุกรายการ (รวมที่ยกเลิก/ปฏิเสธ — หน้าเว็บมีตัวเลือกซ่อน) เรียงตามที่มอบหมาย — พร้อมชื่อบริษัทและคนที่กดรับ
    * canManage = ผู้ดูเป็นผู้จ่ายงาน → ยกเลิกงานย่อยที่ยังไม่มีใครรับได้
+   * canInspect = ผู้ดูเป็นผู้ตรวจงานย่อยของงานแม่นี้ (ดู isSubJobInspector) → ตรวจรับงานย่อยที่ส่งมอบแล้วได้
    */
   private async getSubJobs(
     parentId: string,
-    canManage: boolean,
+    { canManage, canInspect }: { canManage: boolean; canInspect: boolean },
   ): Promise<SubJobItem[]> {
     const rows = await this.jobs
       .createQueryBuilder('j')
@@ -509,9 +606,6 @@ export class JobService {
         'j.dueAt AS dueAt',
       ])
       .where('j.parentJobId = :parentId', { parentId })
-      .andWhere('j.statusId <> :cancelled', {
-        cancelled: JobStatusId.CANCELLED,
-      })
       .orderBy('j.id', 'ASC')
       .getRawMany<{
         id: string;
@@ -525,7 +619,7 @@ export class JobService {
       }>();
     if (rows.length === 0) return [];
 
-    const [names, accepts] = await Promise.all([
+    const [names, accepts, reworks] = await Promise.all([
       this.venderService.getNames(rows.map((r) => r.venderCode)),
       this.jobs.manager.find(JobLog, {
         where: {
@@ -535,6 +629,7 @@ export class JobService {
         order: { id: 'DESC' },
         select: { id: true, jobId: true, actorId: true },
       }),
+      this.getReworks(rows.map((r) => String(r.id))),
     ]);
     // คนที่กดรับล่าสุดของแต่ละงานย่อย
     const acceptorOf = new Map<string, string>();
@@ -552,6 +647,7 @@ export class JobService {
 
     return rows.map((r) => {
       const acceptor = userById.get(String(acceptorOf.get(String(r.id))));
+      const rework = reworks.get(String(r.id));
       return {
         id: String(r.id),
         jobCode: r.jobCode,
@@ -566,9 +662,112 @@ export class JobService {
           ? [acceptor.firstName, acceptor.lastName].filter(Boolean).join(' ')
           : null,
         acceptedByPhone: acceptor?.phoneNumber ?? null,
-        canCancel: canManage && Number(r.statusId) === Number(JobStatusId.NEW),
+        canCancel:
+          canManage && SUB_JOB_CANCELLABLE.includes(Number(r.statusId)),
+        canInspect:
+          canInspect && Number(r.statusId) === Number(JobStatusId.DELIVERED),
+        reworkCount: rework?.count ?? 0,
+        reworking: !!rework?.last && IN_WORK.includes(Number(r.statusId)),
       };
     });
+  }
+
+  /**
+   * งานย่อยที่ผู้ใช้ดูได้ผ่านงานแม่ (อ่านอย่างเดียว): ต้องเห็นงานแม่ และงานย่อยต้องเป็นของงานแม่นั้น
+   * venderCode = บริษัทของงานย่อย → รูปที่เห็นเหมือนที่บริษัทนั้นเห็น
+   */
+  private async findSubJobForParent(
+    user: User,
+    parentId: string,
+    subId: string,
+  ): Promise<{
+    sub: Required<AccessibleJob>;
+    parent: Awaited<ReturnType<JobService['findAccessible']>>;
+  }> {
+    const parent = await this.findAccessible(user, parentId); // 404 ถ้าไม่เห็นงานแม่
+    const sub = await this.jobs.findOne({
+      where: { id: subId, parentJobId: parentId },
+      select: { id: true, statusId: true, venderCode: true },
+    });
+    // งานย่อยที่ยกเลิกแล้วยังเปิดดูประวัติได้ (การ์ดแสดงรายการที่ยกเลิกด้วย)
+    if (!sub) throw new NotFoundException('ไม่พบงานย่อย');
+    return {
+      sub: {
+        id: String(sub.id),
+        statusId: Number(sub.statusId),
+        venderCode: sub.venderCode,
+      },
+      parent,
+    };
+  }
+
+  /** ประวัติงานย่อยโดยละเอียด (ขั้นตอน + รูป) ให้ผู้รับเหมาหลัก/แอดมินดูจากหน้างานแม่ */
+  async getSubJobHistory(
+    user: User,
+    parentId: string,
+    subId: string,
+  ): Promise<SubJobHistory> {
+    const { sub, parent } = await this.findSubJobForParent(
+      user,
+      parentId,
+      subId,
+    );
+    const canInspect = isSubJobInspector(user, await this.getOwnership(parent));
+    const [items, full, status, timeline, attachments] = await Promise.all([
+      this.getSubJobs(parentId, { canManage: false, canInspect }),
+      this.jobs.findOne({
+        where: { id: sub.id },
+        select: {
+          id: true,
+          requestedAt: true,
+          repairedAt: true,
+          repairDetails: true,
+        },
+      }),
+      this.statuses.findOne({ where: { id: sub.statusId } }),
+      this.getTimeline(sub.id, Number(user.roleId) === Number(RoleId.ADMIN)),
+      this.attatchService.list(user, sub),
+    ]);
+    const item = items.find((i) => i.id === sub.id);
+    if (!item || !full) throw new NotFoundException('ไม่พบงานย่อย');
+
+    return {
+      id: item.id,
+      jobCode: item.jobCode,
+      venderCode: item.venderCode,
+      venderName: item.venderName,
+      statusId: item.statusId,
+      statusCode: item.statusCode,
+      statusName: item.statusName,
+      scope: item.scope,
+      dueDate: item.dueDate,
+      dueTime: item.dueTime,
+      acceptedByName: item.acceptedByName,
+      acceptedByPhone: item.acceptedByPhone,
+      canInspect: item.canInspect,
+      reworkCount: item.reworkCount,
+      reworking: item.reworking,
+      closed: Boolean(status?.isClosed),
+      requestedAt: new Date(full.requestedAt).toISOString(),
+      repairedAt: full.repairedAt
+        ? new Date(full.repairedAt).toISOString()
+        : null,
+      repairDetails: full.repairDetails ?? null,
+      timeline,
+      // ดูอย่างเดียว: ฝั่งงานแม่ลบรูปของบริษัทรายย่อยไม่ได้
+      attachments: attachments.map((a) => ({ ...a, canDelete: false })),
+    };
+  }
+
+  /** ตัวไฟล์/รูปของงานย่อย ผ่านงานแม่ (สิทธิ์เดียวกับ getSubJobHistory) */
+  async openSubJobFile(
+    user: User,
+    parentId: string,
+    subId: string,
+    attId: string,
+  ) {
+    const { sub } = await this.findSubJobForParent(user, parentId, subId);
+    return this.attatchService.open(user, sub, attId);
   }
 
   /** ฝั่งงานย่อย: งานแม่ + ผู้มอบหมาย + หมายเหตุตอนมอบหมาย (จากประวัติ 'created' ของงานย่อย) */
@@ -730,38 +929,57 @@ export class JobService {
       if (!dto.details) {
         throw new BadRequestException('กรุณากรอกรายละเอียดการซ่อม');
       }
-      // เวลาในฐานข้อมูลเป็นเวลาท้องถิ่นเก็บแบบไม่มี timezone (driver อ่าน/เขียนเป็น UTC)
-      // จึงตีความค่าที่ผู้ใช้ส่งมา (เวลาบนนาฬิกา) เป็น "UTC" เพื่อให้ตรงกับที่เก็บ และเทียบกับเวลาของ DB เอง
-      repairedAt = new Date(
-        `${dto.repairedAt.length === 16 ? `${dto.repairedAt}:00` : dto.repairedAt}Z`,
-      );
-      if (Number.isNaN(repairedAt.getTime())) {
+      // เวลาบนนาฬิกาที่ผู้ใช้กรอก "YYYY-MM-DDTHH:mm:ss" (เวลาไทย ไม่มี timezone)
+      const wall =
+        dto.repairedAt.length === 16 ? `${dto.repairedAt}:00` : dto.repairedAt;
+      // ค่าที่บันทึกลงฐานข้อมูล: คงวิธีเดิม (Date ที่ตัวเลขตรงกับเวลาบนนาฬิกา) ให้การแสดงผลเหมือนงานก่อนหน้า
+      repairedAt = new Date(`${wall}Z`);
+      const actual = new Date(`${wall}${LOCAL_TZ_OFFSET}`); // เวลาจริงของค่าที่กรอก
+      if (
+        Number.isNaN(repairedAt.getTime()) ||
+        repairedAt.toISOString().slice(0, 19) !== wall // วันที่ต้องมีจริง เช่น 31 ก.พ. ไม่ผ่าน
+      ) {
         throw new BadRequestException('วันเวลาที่ซ่อมเสร็จไม่ถูกต้อง');
       }
-      const [{ now }] = await this.jobs.query<{ now: Date }[]>(
-        'SELECT SYSDATETIME() AS now',
-      );
-      if (repairedAt.getTime() > new Date(now).getTime() + 5 * 60_000) {
+      // ไม่เกินเวลาปัจจุบัน: เทียบเวลาจริงกับนาฬิกาของ server เอง (เผื่อนาฬิกามือถือคลาด 5 นาที)
+      // ห้ามอ่าน SYSDATETIME() มาเทียบ: driver แปลง datetime2 ตาม timezone ของเครื่อง (useUTC: false)
+      // ทำให้ "เวลาปัจจุบัน" ที่ได้ช้าไป 7 ชม. แล้วฟ้องว่าเกินเวลาปัจจุบันทั้งที่ไม่เกิน
+      if (actual.getTime() > Date.now() + 5 * 60_000) {
         throw new BadRequestException(
           'วันเวลาที่ซ่อมเสร็จต้องไม่เกินเวลาปัจจุบัน',
         );
       }
-      const full = await this.jobs.findOne({
-        where: { id },
-        select: { id: true, requestedAt: true, opsRequestedAt: true },
-      });
-      const reportedAt = full?.opsRequestedAt ?? full?.requestedAt;
-      if (reportedAt && repairedAt.getTime() < new Date(reportedAt).getTime()) {
+      // ไม่ก่อนเวลาแจ้งงาน: เทียบเป็นข้อความเวลาบนนาฬิกาใน SQL (ไม่ผ่านการแปลง timezone ของ driver)
+      const [row] = await this.jobs.query<{ reported: string | null }[]>(
+        `SELECT CONVERT(varchar(16), COALESCE(ops_requested_at, requested_at), 126) AS reported
+           FROM dbo.Jobs WHERE id = @0`,
+        [id],
+      );
+      if (row?.reported && wall.slice(0, 16) < row.reported) {
         throw new BadRequestException(
           'วันเวลาที่ซ่อมเสร็จต้องไม่ก่อนวันที่แจ้งงาน',
         );
       }
-      const existing = await this.attatchService.countLive(id, 'completed');
+      // งานที่ถูกตีกลับ: นับเฉพาะรูปที่แนบหลังถูกตีกลับ (รูปรอบก่อนไม่นับ ต้องมีรูปหลังแก้ไขใหม่)
+      const existing = await this.attatchService.countLive(
+        id,
+        'completed',
+        true,
+      );
       if (existing + files.length === 0) {
         throw new BadRequestException(
-          'กรุณาแนบรูปหลังซ่อมเสร็จอย่างน้อย 1 รูป',
+          'กรุณาแนบรูปหลังซ่อมเสร็จอย่างน้อย 1 รูป (งานที่ถูกตีกลับต้องแนบรูปหลังแก้ไขใหม่)',
         );
       }
+      // งานหลัก: ตรวจก่อนเขียนไฟล์ (ตรวจซ้ำในทรานแซกชันพร้อมล็อกอีกชั้น)
+      this.assertSubJobsDone(
+        await this.jobs.count({
+          where: {
+            parentJobId: id,
+            statusId: Not(In(SUB_JOB_DONE)),
+          },
+        }),
+      );
     }
 
     await this.attatchService.assertCapacity(id, rule.kind, files.length);
@@ -779,6 +997,15 @@ export class JobService {
       staged.push(...before);
 
       await this.jobs.manager.transaction(async (em) => {
+        if (dto.action === 'deliver') {
+          // ล็อกช่วงงานย่อยของงานนี้: กันมอบหมายงานย่อยใหม่/สถานะงานย่อยเปลี่ยนระหว่างส่งงาน
+          const [{ pending }] = await em.query<{ pending: number }[]>(
+            `SELECT COUNT(*) AS pending FROM dbo.Jobs WITH (UPDLOCK, HOLDLOCK)
+              WHERE parent_job_id = @0 AND status_id NOT IN (${SUB_JOB_DONE.map((_, i) => `@${i + 1}`).join(', ')})`,
+            [id, ...SUB_JOB_DONE],
+          );
+          this.assertSubJobsDone(Number(pending));
+        }
         const res = await em.update(
           Job,
           { id, statusId: In(rule.from) },
@@ -825,6 +1052,15 @@ export class JobService {
     }
 
     return this.getDetail(user, id);
+  }
+
+  /** ส่งงานหลักไม่ได้ถ้ายังมีงานย่อยที่ยังไม่ผ่านการตรวจรับ (ต้องตรวจรับผ่านหรือยกเลิกให้ครบก่อน) */
+  private assertSubJobsDone(pending: number) {
+    if (pending > 0) {
+      throw new BadRequestException(
+        `ส่งงานไม่ได้: ยังมีงานย่อยค้างอยู่ ${pending} รายการ — งานย่อยที่ยังทำอยู่ต้องส่งมาและตรวจรับผ่านก่อน (งานที่ถูกปฏิเสธ/ยกเลิกไม่นับ)`,
+      );
+    }
   }
 
   /** งานที่ผู้ใช้เข้าถึงได้ (ตามขอบเขตบริษัท/ผู้รับเหมาช่วง) — ใช้ตรวจสิทธิ์ก่อนทำงานกับไฟล์แนบ */
@@ -998,6 +1234,7 @@ export class JobService {
     );
     return events.map((e) => ({
       id: e.id,
+      action: e.action,
       statusId: e.toStatusId!,
       at: new Date(e.createdAt).toISOString(),
       actorName: e.actorId ? (names.get(e.actorId) ?? null) : null,
@@ -1100,9 +1337,10 @@ export class JobService {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
 
-    const qb = this.baseQuery().where('j.statusId = :rejected', {
-      rejected: JobStatusId.REJECTED,
-    });
+    // งานย่อยที่ถูกปฏิเสธไม่เข้าคิวนี้: ถือว่าตัดออกจากงานหลักแล้ว ผู้รับเหมาหลักมอบหมายบริษัทอื่นเอง
+    const qb = this.baseQuery()
+      .where('j.statusId = :rejected', { rejected: JobStatusId.REJECTED })
+      .andWhere('j.parentJobId IS NULL');
     if (query.venderCode) {
       qb.andWhere('j.venderCode = :venderCode', {
         venderCode: query.venderCode,
@@ -1174,6 +1412,11 @@ export class JobService {
     return this.jobs.manager.transaction(async (em) => {
       const job = await em.findOne(Job, { where: { id } });
       if (!job) throw new NotFoundException('ไม่พบงาน');
+      if (job.parentJobId !== null) {
+        throw new BadRequestException(
+          'งานย่อยย้ายบริษัทไม่ได้ — ให้ผู้รับเหมาหลักมอบหมายงานย่อยให้บริษัทอื่นใหม่แทน',
+        );
+      }
       if (!REASSIGNABLE.includes(Number(job.statusId))) {
         throw new ConflictException(
           'งานนี้ย้ายบริษัทไม่ได้ในสถานะปัจจุบัน (ส่งมอบ/ปิดงาน/ยกเลิกแล้ว หรือยังรอตรวจ)',

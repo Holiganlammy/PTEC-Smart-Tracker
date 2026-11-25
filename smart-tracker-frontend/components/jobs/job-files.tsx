@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api, type JobAttatch } from "@/lib/api";
 import { BlobImage } from "./blob-image";
-import { EXPANDED_MODAL, ZoomableImage } from "./zoomable-image";
+import { EXPANDED_MODAL, PHOTO_OVERLAY, ZoomableImage } from "./zoomable-image";
 
 type FileType = "image" | "pdf" | "sheet" | "doc" | "other";
 
@@ -133,7 +133,10 @@ export function JobFiles({ jobId, attachments }: { jobId: string; attachments: J
       </ul>
 
       <Dialog open={viewing !== null} onOpenChange={(o) => !o && closeViewer()}>
-        <DialogContent className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] overflow-y-auto"}>
+        <DialogContent
+          overlayClassName={PHOTO_OVERLAY}
+          className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] overflow-y-auto"}
+        >
           <DialogHeader className={expanded ? "shrink-0 pr-8" : undefined}>
             <DialogDescription className="text-left text-xs font-medium">ไฟล์แนบ</DialogDescription>
             <DialogTitle className="text-left leading-snug break-all">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>

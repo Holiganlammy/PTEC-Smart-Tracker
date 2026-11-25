@@ -391,6 +391,9 @@ function OriginTags({ job }: { job: Job }) {
       label: `รับช่วงจาก ${job.parentVenderName ?? "ผู้รับเหมาหลัก"}`,
       className: "bg-sub-accent/10 text-sub-accent",
     });
+    if (job.reworking) {
+      tags.push({ label: "ถูกตีกลับให้แก้ไข", className: "bg-danger/10 text-danger" });
+    }
   } else {
     if (job.statusCode !== "pending_review" && job.statusCode !== "returned") {
       tags.push({ label: "ลูกค้าตรง", className: "bg-muted text-muted-foreground" });

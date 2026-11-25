@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import type { CreateSubJobDto } from '../dto/job-sub.dto';
+import type { CreateSubJobDto, InspectSubJobDto } from '../dto/job-sub.dto';
 import { Job } from '../model/job.model';
 import { JobLog, JobLogAction } from '../model/job-log.model';
 import { JobStatusId } from '../model/job-status.model';
@@ -17,7 +17,11 @@ import type { UploadedFileLike } from '../type/job-attatch.type';
 import type { JobDetail } from '../type/job.type';
 import { JobAttatchService, type StagedFile } from './job-attatch.service';
 import { JobService } from './job.service';
-import { canAddSubJob } from './job-permission';
+import {
+  canAddSubJob,
+  isSubJobInspector,
+  SUB_JOB_CANCELLABLE,
+} from './job-permission';
 import { VenderService } from './vender.service';
 
 /**
@@ -94,6 +98,13 @@ export class JobSubService {
     let staged: StagedFile[] = [];
     try {
       await this.jobs.manager.transaction(async (em) => {
+        // ล็อกช่วงงานย่อยของงานแม่ก่อน: กันสองคนกดพร้อมกันได้เลขซ้ำ และกันงานแม่ถูกส่งงานไปพร้อมกัน
+        // (การส่งงานหลักล็อกช่วงเดียวกันแล้วตรวจว่างานย่อยจบครบ — ใครได้ล็อกก่อนอีกฝั่งต้องรอ)
+        const [{ n }] = await em.query<{ n: number }[]>(
+          'SELECT COUNT(*) AS n FROM dbo.Jobs WITH (UPDLOCK, HOLDLOCK) WHERE parent_job_id = @0',
+          [parent.id],
+        );
+
         // งานแม่ต้องยังอยู่สถานะที่มอบหมายต่อได้ ณ ตอนบันทึก (กันสถานะเปลี่ยนระหว่างกรอกฟอร์ม)
         const still = await em.findOne(Job, {
           where: {
@@ -124,11 +135,7 @@ export class JobSubService {
           );
         }
 
-        // ออกเลข -S{n}: ล็อกช่วงของงานแม่ไว้ กันสองคนกดพร้อมกันได้เลขซ้ำ
-        const [{ n }] = await em.query<{ n: number }[]>(
-          'SELECT COUNT(*) AS n FROM dbo.Jobs WITH (UPDLOCK, HOLDLOCK) WHERE parent_job_id = @0',
-          [parent.id],
-        );
+        // ออกเลข -S{n} จากจำนวนที่นับไว้ตอนล็อก
         const jobCode = `${parent.jobCode}-S${Number(n) + 1}`;
 
         const inserted = await em.insert(Job, {
@@ -189,7 +196,7 @@ export class JobSubService {
     return this.jobService.getDetail(user, parent.id);
   }
 
-  /** ยกเลิกงานย่อยที่ยังไม่มีใครรับ (เลือกบริษัทผิด ฯลฯ) — คืนรายละเอียดงานแม่ล่าสุด */
+  /** ยกเลิกงานย่อยที่ยังไม่มีใครรับ (เลือกบริษัทผิด ฯลฯ) — คืนรายละเอียดงานแม่ล่าสุด (สถานะที่ยกเลิกได้: SUB_JOB_CANCELLABLE) */
   async cancel(
     user: User,
     parentId: string,
@@ -198,20 +205,31 @@ export class JobSubService {
     const parent = await this.requireDispatcher(user, parentId);
 
     await this.jobs.manager.transaction(async (em) => {
+      const sub = await em.findOne(Job, {
+        where: { id: subId, parentJobId: parent.id },
+        select: { id: true, statusId: true },
+      });
+      const from = sub ? Number(sub.statusId) : null;
+      if (from === null || !SUB_JOB_CANCELLABLE.includes(from)) {
+        throw new ConflictException(
+          'ยกเลิกไม่ได้: งานย่อยนี้มีผู้รับไปแล้วหรือถูกยกเลิกไปแล้ว กรุณารีเฟรชหน้า',
+        );
+      }
+      // เปลี่ยนแบบมีเงื่อนไข: สถานะต้องยังเป็นค่าที่อ่านมา (กันบริษัทกดรับงานพร้อมกัน)
       const res = await em.update(
         Job,
-        { id: subId, parentJobId: parent.id, statusId: JobStatusId.NEW },
+        { id: subId, parentJobId: parent.id, statusId: from },
         { statusId: JobStatusId.CANCELLED, updatedAt: () => 'SYSDATETIME()' },
       );
       if (!res.affected) {
         throw new ConflictException(
-          'ยกเลิกไม่ได้: งานย่อยนี้มีผู้รับไปแล้วหรือถูกยกเลิกไปแล้ว กรุณารีเฟรชหน้า',
+          'ยกเลิกไม่ได้: สถานะงานย่อยเปลี่ยนไปแล้ว กรุณารีเฟรชหน้า',
         );
       }
       await em.insert(JobLog, {
         jobId: subId,
         action: JobLogAction.CANCELLED,
-        fromStatusId: JobStatusId.NEW,
+        fromStatusId: from,
         toStatusId: JobStatusId.CANCELLED,
         actorId: user.id,
         note: 'ผู้รับเหมาหลักยกเลิกก่อนมีผู้ตอบรับ',
@@ -219,5 +237,60 @@ export class JobSubService {
     });
 
     return this.jobService.getDetail(user, parent.id);
+  }
+
+  /**
+   * ผู้รับเหมาหลัก (เจ้าของงานแม่ / หัวหน้าของบริษัท) หรือแอดมินตรวจงานย่อยที่บริษัทรายย่อยส่งมา — คืนรายละเอียดงานแม่ล่าสุด
+   *  approve → ปิดงานย่อย (ส่งมอบ → ปิดงาน)
+   *  rework  → ตีกลับให้แก้ไข (ส่งมอบ → กำลังดำเนินการ) ต้องระบุสิ่งที่ต้องแก้ บริษัทรายย่อยต้องส่งงานใหม่พร้อมรูปหลังแก้ไข
+   */
+  async inspect(
+    user: User,
+    parentId: string,
+    subId: string,
+    dto: InspectSubJobDto,
+  ): Promise<JobDetail> {
+    const parent = await this.jobService.findAccessible(user, parentId); // 404 ถ้าไม่เห็นงานแม่
+    if (!isSubJobInspector(user, await this.jobService.getOwnership(parent))) {
+      throw new ForbiddenException(
+        'ตรวจรับงานย่อยได้เฉพาะผู้รับเหมาที่รับงานนี้ หัวหน้าของบริษัท หรือแอดมิน',
+      );
+    }
+    const sub = await this.jobs.findOne({
+      where: { id: subId, parentJobId: parentId },
+      select: { id: true, statusId: true },
+    });
+    if (!sub || Number(sub.statusId) === Number(JobStatusId.CANCELLED)) {
+      throw new NotFoundException('ไม่พบงานย่อย');
+    }
+    const approve = dto.result === 'approve';
+    if (!approve && !dto.note) {
+      throw new BadRequestException('กรุณาระบุสิ่งที่ต้องแก้ไข');
+    }
+    const to = approve ? JobStatusId.COMPLETED : JobStatusId.IN_PROGRESS;
+
+    await this.jobs.manager.transaction(async (em) => {
+      // เปลี่ยนแบบมีเงื่อนไข: ต้องยังรอตรวจรับอยู่ (กันกดซ้ำ/หัวหน้าสองคนตรวจพร้อมกัน)
+      const res = await em.update(
+        Job,
+        { id: subId, parentJobId: parentId, statusId: JobStatusId.DELIVERED },
+        { statusId: to, updatedAt: () => 'SYSDATETIME()' },
+      );
+      if (!res.affected) {
+        throw new ConflictException(
+          'งานย่อยนี้ไม่ได้รอตรวจรับแล้ว (อาจมีคนตรวจไปแล้ว) กรุณารีเฟรชหน้า',
+        );
+      }
+      await em.insert(JobLog, {
+        jobId: subId,
+        action: approve ? JobLogAction.INSPECTED : JobLogAction.REWORK,
+        fromStatusId: JobStatusId.DELIVERED,
+        toStatusId: to,
+        actorId: user.id,
+        note: dto.note ?? null,
+      });
+    });
+
+    return this.jobService.getDetail(user, parentId);
   }
 }

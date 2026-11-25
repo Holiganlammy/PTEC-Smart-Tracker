@@ -44,6 +44,8 @@ export interface JobItem {
   parentVenderName?: string | null;
   /** เฉพาะรายการงาน: งานหลัก → จำนวนงานย่อยที่มอบหมายต่อ (ไม่นับที่ยกเลิก) */
   subJobCount?: number;
+  /** เฉพาะรายการงาน: งานย่อยที่ถูกตีกลับให้แก้ไขและยังไม่ได้ส่งใหม่ */
+  reworking?: boolean;
 }
 
 /** ประเภทงานของ OPS (ตาราง JobType) */
@@ -95,7 +97,12 @@ export interface JobFilterOptions {
 /** แถวดิบจากฐานข้อมูลก่อนแปลงเป็น JobItem (closed เป็น bit/number, requestedAt เป็น Date) */
 export type JobRow = Omit<
   JobItem,
-  'closed' | 'requestedAt' | 'assigneeName' | 'parentVenderName' | 'subJobCount'
+  | 'closed'
+  | 'requestedAt'
+  | 'assigneeName'
+  | 'parentVenderName'
+  | 'subJobCount'
+  | 'reworking'
 > & {
   closed: boolean | number;
   requestedAt: Date;
@@ -108,11 +115,23 @@ export type JobRow = Omit<
 /** เหตุการณ์เปลี่ยนสถานะของงาน (จาก Jobs_Logs) ใช้แสดง timeline ในหน้ารายละเอียด */
 export interface JobTimelineEvent {
   id: string;
+  /** ชนิดเหตุการณ์ (Jobs_Logs.action) เช่น rework = ตีกลับให้แก้ไข, inspected = ตรวจรับงานย่อย */
+  action: string;
   /** สถานะที่งานเปลี่ยนไปเป็น */
   statusId: number;
   at: string;
   actorName: string | null;
   note: string | null;
+}
+
+/** งานย่อยที่ถูกตีกลับให้แก้ไขและยังไม่ได้ส่งงานใหม่ (ครั้งล่าสุด) */
+export interface JobRework {
+  /** ตีกลับมาแล้วกี่ครั้ง (รวมครั้งนี้) */
+  count: number;
+  /** สิ่งที่ต้องแก้ไข */
+  note: string | null;
+  byName: string | null;
+  at: string;
 }
 
 /** ความเกี่ยวข้องของงานในประวัติกับงานที่เปิดอยู่ */
@@ -164,6 +183,27 @@ export interface SubJobItem {
   acceptedByPhone: string | null;
   /** ยกเลิกงานย่อยนี้ได้ (ผู้ใช้เป็นผู้จ่ายงาน และยังไม่มีใครรับ) */
   canCancel: boolean;
+  /** ตรวจรับ/ตีกลับได้ตอนนี้ (ผู้ใช้เป็นเจ้าของงานแม่/หัวหน้า/แอดมิน และงานย่อยส่งมอบแล้ว) */
+  canInspect: boolean;
+  /** ถูกตีกลับให้แก้ไขมาแล้วกี่ครั้ง */
+  reworkCount: number;
+  /** กำลังแก้ไขตามที่ถูกตีกลับ (ยังไม่ได้ส่งงานใหม่) */
+  reworking: boolean;
+}
+
+/**
+ * ประวัติงานย่อยโดยละเอียด ให้ฝั่งงานแม่ดู (GET /jobs/:id/subjobs/:subId) — อ่านอย่างเดียว
+ * ผู้รับเหมาหลักอยู่คนละบริษัทกับงานย่อย จึงเปิด /jobs/:subId ตรง ๆ ไม่ได้
+ */
+export interface SubJobHistory extends Omit<SubJobItem, 'canCancel'> {
+  closed: boolean;
+  /** เวลาที่มอบหมายงานย่อย */
+  requestedAt: string;
+  repairedAt: string | null;
+  repairDetails: string | null;
+  timeline: JobTimelineEvent[];
+  /** รูปทุกขั้นตอน (ตัวไฟล์ดึงจาก /jobs/:id/subjobs/:subId/attachments/:attId/file) */
+  attachments: JobAttatchItem[];
 }
 
 /** ฝั่งงานย่อย: ใครมอบหมายต่อมาให้ (แสดงเป็นแบนเนอร์ "รับช่วงจาก …" และการ์ดขอบเขตงาน) */
@@ -208,4 +248,6 @@ export interface JobDetail extends JobItem {
   canAddSubJob: boolean;
   /** มีค่าเมื่อเป็นงานย่อย — ใครมอบหมายต่อมาให้ */
   subJobOrigin: SubJobOrigin | null;
+  /** มีค่าเมื่องานย่อยถูกตีกลับให้แก้ไขและยังไม่ได้ส่งงานใหม่ */
+  rework: JobRework | null;
 }

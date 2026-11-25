@@ -15,6 +15,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, type JobAction, type JobDetail } from "@/lib/api";
 import { PhotoPicker } from "./photo-picker";
+import { pendingSubJobs } from "./sub-job-format";
 
 /** การกระทำที่ทำผ่านไดอะล็อกในหน้านี้ (ส่งงานไปทำที่หน้า "ส่งงานซ่อม") */
 type DialogAction = Exclude<JobAction, "deliver">;
@@ -101,6 +102,7 @@ export function JobActions({
   const [open, setOpen] = useState<DialogAction | null>(null);
   const can = (a: JobAction) => job.actions.includes(a);
   if (job.actions.length === 0) return null;
+  const pendingSubs = pendingSubJobs(job.subJobs).length;
 
   // ปุ่มหลักของแต่ละสถานะ: รับงาน → เริ่มดำเนินการ → ส่งงาน (ปุ่มรองคือรออะไหล่/กลับมาทำต่อ)
   const primary: DialogAction | null = can("accept") ? "accept" : can("start") ? "start" : null;
@@ -119,8 +121,13 @@ export function JobActions({
           nativeButton={false}
           render={<Link href={`/jobs/${job.id}/submit`} />}
         >
-          ส่งงาน
+          {job.rework ? "ส่งงานที่แก้ไขแล้ว" : "ส่งงาน"}
         </Button>
+      )}
+      {can("deliver") && pendingSubs > 0 && (
+        <p className="text-center text-xs text-warning">
+          ยังมีงานย่อยค้าง {pendingSubs} รายการ — ส่งงานได้เมื่องานย่อยตรวจรับผ่านครบ (ไม่นับที่ถูกปฏิเสธ/ยกเลิก)
+        </p>
       )}
       {secondary && (
         <Button variant="outline" className="h-12 w-full rounded-xl" onClick={() => setOpen(secondary)}>

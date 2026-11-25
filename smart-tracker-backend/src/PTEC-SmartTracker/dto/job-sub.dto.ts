@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
 import {
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -44,6 +45,22 @@ export class CreateSubJobDto {
     message: 'กรุณาระบุเวลากำหนดเสร็จ (รูปแบบ HH:mm)',
   })
   dueTime!: string;
+
+  @Transform(trimToUndefined)
+  @IsOptional()
+  @IsString()
+  @MaxLength(500, { message: 'หมายเหตุยาวเกิน 500 ตัวอักษร' })
+  note?: string;
+}
+
+/**
+ * PATCH /jobs/:id/subjobs/:subId/inspect — หัวหน้าตรวจงานย่อยที่บริษัทรายย่อยส่งมา
+ *   result  approve = ตรวจรับผ่าน (ปิดงานย่อย), rework = ตีกลับให้แก้ไข (กลับไปกำลังดำเนินการ)
+ *   note    หมายเหตุ — ตีกลับต้องระบุสิ่งที่ต้องแก้ไข (ตรวจที่ service)
+ */
+export class InspectSubJobDto {
+  @IsIn(['approve', 'rework'], { message: 'ผลการตรวจไม่ถูกต้อง' })
+  result!: 'approve' | 'rework';
 
   @Transform(trimToUndefined)
   @IsOptional()

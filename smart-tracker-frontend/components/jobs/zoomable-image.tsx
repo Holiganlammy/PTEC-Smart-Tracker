@@ -10,6 +10,8 @@ import { BlobImage } from "./blob-image";
 export const EXPANDED_MODAL =
   "flex h-[92dvh] max-h-[92dvh] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-3 sm:max-w-3xl";
 
+export const PHOTO_OVERLAY = "bg-black/70 supports-backdrop-filter:backdrop-blur-md";
+
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const STEP = 0.5;
@@ -18,11 +20,7 @@ const DOUBLE_TAP_ZOOM = 2.5;
 const clamp = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 const touchDistance = (a: React.Touch, b: React.Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 
-/**
- * ดูรูปเต็มพื้นที่ซูมได้ (1x–5x): ปุ่ม − / + , แตะสองครั้งเพื่อขยาย/กลับ, บีบสองนิ้วบนมือถือ
- * ซูมแล้วเลื่อนดูส่วนอื่นของรูปด้วยการลาก/scroll — จุดที่ซูมจะอยู่ตำแหน่งเดิมใต้นิ้ว
- * ต้องวางในพื้นที่ที่มีความสูงแน่นอน (flex-1 ในกล่องที่กำหนดความสูง)
- */
+
 export function ZoomableImage({
   jobId,
   item,
@@ -35,7 +33,6 @@ export function ZoomableImage({
 }) {
   const [zoom, setZoom] = useState(1);
   const scroller = useRef<HTMLDivElement>(null);
-  // จุดอ้างอิงตอนซูม: สัดส่วนของจุดนั้นในรูป + ตำแหน่งบนจอ เพื่อเลื่อน scroll ให้จุดเดิมอยู่ใต้นิ้วหลังขนาดเปลี่ยน
   const anchor = useRef<{ fx: number; fy: number; cx: number; cy: number } | null>(null);
   const pinch = useRef<{ dist: number; zoom: number } | null>(null);
 

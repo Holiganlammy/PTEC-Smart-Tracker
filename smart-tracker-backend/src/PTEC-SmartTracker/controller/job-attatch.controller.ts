@@ -19,6 +19,7 @@ import { JwtAuthGuard } from '../guard/jwt-auth.guard';
 import { Roles, RolesGuard } from '../guard/roles.guard';
 import { RoleId } from '../model/role.model';
 import {
+  fileResponseHeaders,
   JobAttatchService,
   MAX_FILE_BYTES,
   MAX_FILES_PER_REQUEST,
@@ -79,13 +80,7 @@ export class JobAttatchController {
       job,
       String(attId),
     );
-    res.set({
-      'Content-Type': mime,
-      'Content-Disposition': 'inline',
-      // ไฟล์จาก OPS เป็นของนอกระบบ: ห้ามเบราว์เซอร์เดาชนิดเอง
-      'X-Content-Type-Options': 'nosniff',
-      'Cache-Control': 'private, max-age=300',
-    });
+    res.set(fileResponseHeaders(mime));
     return file;
   }
 

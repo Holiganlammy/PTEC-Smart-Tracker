@@ -8,6 +8,7 @@ import {
   Query,
   Post,
   Req,
+  Res,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -23,8 +24,10 @@ import { ReassignJobDto } from '../dto/job-reassign.dto';
 import { ReturnJobDto, UpdateJobDto } from '../dto/job-review.dto';
 import { ListJobsQuery } from '../dto/job-query.dto';
 import { ChangeJobStatusDto } from '../dto/job-status.dto';
-import { CreateSubJobDto } from '../dto/job-sub.dto';
+import { CreateSubJobDto, InspectSubJobDto } from '../dto/job-sub.dto';
+import type { Response } from 'express';
 import {
+  fileResponseHeaders,
   MAX_FILE_BYTES,
   MAX_FILES_PER_REQUEST,
 } from '../service/job-attatch.service';
@@ -129,6 +132,39 @@ export class JobController {
     );
   }
 
+  /** GET /jobs/:id/subjobs/:subId — ประวัติงานย่อยโดยละเอียด (ขั้นตอน + รูป) ให้ฝั่งงานแม่ดู อ่านอย่างเดียว */
+  @Get(':id/subjobs/:subId')
+  getSubJobHistory(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('subId', ParseIntPipe) subId: number,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.jobService.getSubJobHistory(
+      req.currentUser!,
+      String(id),
+      String(subId),
+    );
+  }
+
+  /** GET /jobs/:id/subjobs/:subId/attachments/:attId/file — รูปของงานย่อย (ต้องแนบ Authorization) */
+  @Get(':id/subjobs/:subId/attachments/:attId/file')
+  async subJobFile(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('subId', ParseIntPipe) subId: number,
+    @Param('attId', ParseIntPipe) attId: number,
+    @Req() req: AuthedRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { file, mime } = await this.jobService.openSubJobFile(
+      req.currentUser!,
+      String(id),
+      String(subId),
+      String(attId),
+    );
+    res.set(fileResponseHeaders(mime));
+    return file;
+  }
+
   /** PATCH /jobs/:id/subjobs/:subId/cancel — ยกเลิกงานย่อยที่ยังไม่มีใครรับ */
   @Roles(RoleId.CONTRACTOR, RoleId.HEAD, RoleId.ADMIN)
   @Patch(':id/subjobs/:subId/cancel')
@@ -141,6 +177,26 @@ export class JobController {
       req.currentUser!,
       String(id),
       String(subId),
+    );
+  }
+
+  /**
+   * PATCH /jobs/:id/subjobs/:subId/inspect { result: approve | rework, note? }
+   * ผู้รับเหมาหลัก (เจ้าของงานแม่ / หัวหน้า) หรือแอดมิน ตรวจรับ/ตีกลับงานย่อยที่ส่งมอบแล้ว — คืนรายละเอียดงานแม่ล่าสุด
+   */
+  @Roles(RoleId.CONTRACTOR, RoleId.HEAD, RoleId.ADMIN)
+  @Patch(':id/subjobs/:subId/inspect')
+  inspectSubJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('subId', ParseIntPipe) subId: number,
+    @Body() dto: InspectSubJobDto,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.jobSubService.inspect(
+      req.currentUser!,
+      String(id),
+      String(subId),
+      dto,
     );
   }
 

@@ -107,6 +107,27 @@ export function canAddSubJob(
   return isJobOwner(user, o);
 }
 
+/**
+ * สถานะงานย่อยที่ผู้จ่ายงานยกเลิกได้: ยังไม่มีใครรับเท่านั้น
+ * (งานที่บริษัทปฏิเสธถือว่าตัดออกจากงานหลักแล้ว ไม่ขวางการส่งงานหลัก จึงไม่ต้องยกเลิก)
+ */
+export const SUB_JOB_CANCELLABLE: number[] = [JobStatusId.NEW];
+
+/**
+ * ผู้ใช้คนนี้ตรวจรับ/ตีกลับงานย่อยของงานแม่นี้ได้ไหม (ยังไม่ดูสถานะงานย่อย)
+ *  - ผู้รับเหมาหลักที่เป็นเจ้าของงานแม่ (คนที่รับงาน/จ่ายงานย่อย)
+ *  - หัวหน้าของบริษัทผู้รับเหมาหลัก (ไม่ต้องเป็นเจ้าของงาน)
+ *  - แอดมิน
+ * การเห็นงานแม่ (บริษัทเดียวกัน) ตรวจแยกที่ JobService.findAccessible
+ */
+export function isSubJobInspector(user: Actor, parent: JobOwnership): boolean {
+  const role = Number(user.roleId);
+  if (role === Number(RoleId.ADMIN) || role === Number(RoleId.HEAD)) {
+    return true;
+  }
+  return SUB_JOB_DISPATCHERS.includes(role) && isJobOwner(user, parent);
+}
+
 /** เหตุที่พิมพ์แชทไม่ได้ (UI แปลงเป็นข้อความไทยเอง) */
 export type ChatBlockReason =
   'closed' | 'rejected' | 'no_owner_yet' | 'not_owner';

@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { api, type AttatchKind, type JobAttatch, type UploadKind } from "@/lib/api";
 import { compressImage } from "@/lib/image";
 import { BlobImage } from "./blob-image";
-import { EXPANDED_MODAL, ZoomableImage } from "./zoomable-image";
+import { EXPANDED_MODAL, PHOTO_OVERLAY, ZoomableImage } from "./zoomable-image";
 
 const uploadedAtFormat = new Intl.DateTimeFormat("th-TH", {
   day: "numeric",
@@ -119,7 +119,10 @@ export function JobPhotos({
 
       <Dialog open={viewing !== null} onOpenChange={(o) => !o && !deleting && closeViewer()}>
         {/* grid-cols-[minmax(0,1fr)]: ชื่อไฟล์ยาวไม่ดันเนื้อหาให้กว้างเกินกรอบ modal */}
-        <DialogContent className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] grid-cols-[minmax(0,1fr)] overflow-y-auto"}>
+        <DialogContent
+          overlayClassName={PHOTO_OVERLAY}
+          className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] grid-cols-[minmax(0,1fr)] overflow-y-auto"}
+        >
           <DialogHeader className={expanded ? "shrink-0 pr-8" : undefined}>
             <DialogDescription className="text-left text-xs font-medium">รูปแนบ · {stepTitle}</DialogDescription>
             <DialogTitle className="text-left leading-snug break-all">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>

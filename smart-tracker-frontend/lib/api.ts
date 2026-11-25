@@ -97,19 +97,15 @@ export type Job = {
   details: string | null;
   brand: string | null;
   model: string | null;
-  /** ผู้รับเหมาช่วงที่ได้รับมอบหมาย (null = ยังไม่มอบหมาย) */
   assigneeId: string | null;
   assigneeName: string | null;
-  /** ผู้แจ้ง/เบอร์/สถานที่ (สำเนาจาก OPS แอดมินแก้ได้ก่อนอนุมัติ) */
   reporterName: string | null;
   reporterPhone: string | null;
   address: string | null;
-  /** งานย่อย: id ของงานแม่ที่มอบหมายต่อมา (null = งานหลัก/ลูกค้าตรง) */
   parentJobId: string | null;
-  /** เฉพาะรายการงาน: งานย่อย → ชื่อบริษัทที่มอบหมายต่อมา */
   parentVenderName?: string | null;
-  /** เฉพาะรายการงาน: งานหลัก → จำนวนงานย่อยที่มอบหมายต่อ (ไม่นับที่ยกเลิก) */
   subJobCount?: number;
+  reworking?: boolean;
 };
 
 /** จำนวนงานแต่ละกลุ่ม (ตามตัวกรองที่เลือกอยู่) */
@@ -125,11 +121,8 @@ export type JobList = {
 
 /** ตัวกรองหน้ารายการงาน */
 export type JobFilters = {
-  /** รหัสสถานะ (ว่าง = ทุกสถานะ) */
   status: number[];
-  /** branch_code ("" = ทุกสาขา) */
   branch: string;
-  /** แจ้งงานภายใน N วันล่าสุด (null = ทั้งหมด) */
   days: number | null;
 };
 
@@ -141,7 +134,7 @@ export type JobFilterOptions = {
 /** เหตุการณ์เปลี่ยนสถานะของงาน (ใช้แสดง timeline) */
 export type JobTimelineEvent = {
   id: string;
-  /** สถานะที่งานเปลี่ยนไปเป็น */
+  action: string;
   statusId: number;
   at: string;
   actorName: string | null;
@@ -185,13 +178,9 @@ export type JobAction = "accept" | "start" | "wait_parts" | "resume" | "deliver"
 export type ChangeJobStatusInput = {
   action: JobAction;
   note?: string;
-  /** วันเวลาที่ซ่อมเสร็จ "YYYY-MM-DDTHH:mm" (เวลาท้องถิ่น ไม่มี timezone) — ใช้กับ deliver */
   repairedAt?: string;
-  /** รายละเอียดการซ่อม — ใช้กับ deliver */
   details?: string;
-  /** รูปของขั้นตอนนี้ (รับงาน / กำลังดำเนินงาน / หลังซ่อมเสร็จ) */
   files?: File[];
-  /** รูปก่อนซ่อม (เฉพาะ deliver) */
   beforeFiles?: File[];
 };
 
@@ -204,9 +193,7 @@ export type JobMessage = {
   senderName: string;
   senderRole: MessageSenderRole;
   body: string;
-  /** เวลาท้องถิ่นที่เก็บในฐานข้อมูล (ไม่มี timezone) แสดงแบบ UTC เหมือนเวลาอื่น */
   createdAt: string;
-  /** ข้อความของผู้ใช้คนนี้ */
   mine: boolean;
 };
 
@@ -237,20 +224,34 @@ export type SubJob = {
   statusId: number;
   statusCode: string;
   statusName: string;
-  /** ขอบเขตงานที่มอบหมาย */
   scope: string | null;
-  /** กำหนดเสร็จ YYYY-MM-DD */
   dueDate: string | null;
-  /** เวลากำหนดเสร็จ HH:mm (null = งานย่อยเก่า ให้ถือเป็น 18:00) */
   dueTime: string | null;
-  /** คนที่กดรับงานย่อย (null = ยังไม่มีใครรับ) */
   acceptedByName: string | null;
   acceptedByPhone: string | null;
-  /** ยกเลิกได้ (ผู้ใช้เป็นผู้จ่ายงาน และยังไม่มีใครรับ) */
   canCancel: boolean;
+  reworkCount: number;
+  reworking: boolean;
+};
+
+export type JobRework = {
+  count: number;
+  note: string | null;
+  byName: string | null;
+  at: string;
 };
 
 /** ฝั่งงานย่อย: ใครมอบหมายต่อมาให้ */
+/** ประวัติงานย่อยโดยละเอียด ให้ฝั่งงานแม่ดู (อ่านอย่างเดียว) */
+export type SubJobHistory = Omit<SubJob, "canCancel"> & {
+  closed: boolean;
+  requestedAt: string;
+  repairedAt: string | null;
+  repairDetails: string | null;
+  timeline: JobTimelineEvent[];
+  attachments: JobAttatch[];
+};
+
 export type SubJobOrigin = {
   parentJobId: string;
   parentJobCode: string;
@@ -258,9 +259,7 @@ export type SubJobOrigin = {
   parentVenderName: string | null;
   assignedByName: string | null;
   dueDate: string | null;
-  /** เวลากำหนดเสร็จ HH:mm (null = งานย่อยเก่า ให้ถือเป็น 18:00) */
   dueTime: string | null;
-  /** หมายเหตุที่ผู้รับเหมาหลักเขียนตอนมอบหมาย */
   note: string | null;
 };
 
@@ -268,9 +267,7 @@ export type SubJobOrigin = {
 export type AddSubJobInput = {
   venderCode: string;
   scope: string;
-  /** กำหนดเสร็จ YYYY-MM-DD */
   dueDate: string;
-  /** เวลากำหนดเสร็จ HH:mm */
   dueTime: string;
   note?: string;
   files?: File[];
@@ -278,35 +275,25 @@ export type AddSubJobInput = {
 
 /** รายละเอียดงานเต็ม */
 export type JobDetail = Job & {
-  /** ว่าง = ยังไม่มีผู้รับผิดชอบ */
   team: JobTeamMember[];
   priority: { name: string | null; slaHours: number | null } | null;
-  /** เวลาที่ OPS แจ้งงานจริง (ใช้นับ SLA) null = ใช้ requestedAt */
   opsRequestedAt: string | null;
   keyedByName: string | null;
   history: JobHistoryItem[];
   timeline: JobTimelineEvent[];
   attachments: JobAttatch[];
-  /** ชนิดรูปที่ผู้ใช้อัปโหลดเพิ่มได้ในสถานะปัจจุบัน */
   uploadableKinds: UploadKind[];
-  /** การเปลี่ยนสถานะที่ผู้ใช้ทำได้ตอนนี้ (server เป็นผู้ตัดสิน) */
   actions: JobAction[];
-  /** ข้อมูลการส่งงานซ่อม (มีเมื่อส่งงานแล้ว) */
   repairedAt: string | null;
   repairDetails: string | null;
-  /** งานย่อยที่มอบหมายต่อให้บริษัทอื่น */
   subJobs: SubJob[];
-  /** ผู้ใช้คนนี้เพิ่มงานย่อยได้ตอนนี้ (server เป็นผู้ตัดสิน) */
   canAddSubJob: boolean;
-  /** มีค่าเมื่อเป็นงานย่อย */
   subJobOrigin: SubJobOrigin | null;
+  rework: JobRework | null;
 };
 
-/** งานในคิวตรวจของแอดมิน (มีชื่อบริษัทผู้รับเหมา) */
 export type ReviewJob = Job & { venderName: string | null };
-/** ประเภทงานของ OPS (ตาราง JobType) */
 export type JobType = { jobTypeId: number; name: string };
-/** ช่องที่แอดมินแก้ได้ในงานที่รอตรวจ (ช่องว่าง = ล้างค่า) */
 export type JobEditFields = {
   jobType: string;
   branchName: string;
@@ -321,12 +308,10 @@ export type ReviewJobList = { items: ReviewJob[]; total: number; page: number; p
 
 /** งานที่บริษัทปฏิเสธ รอแอดมินจ่ายให้บริษัทอื่น */
 export type RejectedJob = Job & {
-  /** บริษัทที่ปฏิเสธ (บริษัทปัจจุบันของงาน) */
   venderName: string | null;
   rejectedAt: string | null;
   rejectedByName: string | null;
   reason: string | null;
-  /** true = ปฏิเสธหลังจากรับงานไปแล้ว */
   afterAccept: boolean;
 };
 export type RejectedJobList = { items: RejectedJob[]; total: number; page: number; pageSize: number };
@@ -335,7 +320,6 @@ export type RejectedJobList = { items: RejectedJob[]; total: number; page: numbe
 export const api = {
   getVenders: () => http.get<Vender[]>("/venders"),
 
-  /** ต้องล็อกอินก่อน (ensureSession ใน lib/auth.ts) */
   getMe: () => http.get<MeResponse>("/users/me"),
 
   register: (input: RegisterInput) =>
@@ -348,7 +332,6 @@ export const api = {
     page?: number;
     pageSize?: number;
     filters?: JobFilters;
-    /** เฉพาะแอดมิน: ดูงานของบริษัทอื่น (ผู้ใช้ทั่วไปเซิร์ฟเวอร์บังคับเป็นบริษัทตัวเอง) */
     venderCode?: string;
   }) => {
     const { filters, ...rest } = params;
@@ -364,7 +347,6 @@ export const api = {
   listJobFilters: (venderCode?: string) =>
     http.get<JobFilterOptions>("/jobs/filters", { params: { venderCode: venderCode || undefined } }),
   getJob: (id: string) => http.get<JobDetail>(`/jobs/${id}`),
-  /** เปลี่ยนสถานะงาน (รับงาน/เริ่ม/รออะไหล่/ส่งงาน) พร้อมแนบรูป — คืนรายละเอียดงานล่าสุด */
   changeJobStatus: (id: string, input: ChangeJobStatusInput) => {
     const form = new FormData();
     form.append("action", input.action);
@@ -388,6 +370,14 @@ export const api = {
   },
   /** ยกเลิกงานย่อยที่ยังไม่มีใครรับ — คืนรายละเอียดงานแม่ล่าสุด */
   cancelSubJob: (id: string, subId: string) => http.patch<JobDetail>(`/jobs/${id}/subjobs/${subId}/cancel`),
+  inspectSubJob: (id: string, subId: string, body: { result: "approve" | "rework"; note?: string }) =>
+  http.patch<JobDetail>(`/jobs/${id}/subjobs/${subId}/inspect`, body),
+  getSubJobHistory: (id: string, subId: string) => http.get<SubJobHistory>(`/jobs/${id}/subjobs/${subId}`),
+  getSubJobFile: (id: string, subId: string, attId: string) =>
+    http.get<Blob>(`/jobs/${id}/subjobs/${subId}/attachments/${attId}/file`, {
+      responseType: "blob",
+      timeoutMs: 30_000,
+    }),
   /** อัปโหลดรูปของงาน (ชนิด kind ตามขั้นตอน) */
   uploadJobFiles: (id: string, kind: UploadKind, files: File[]) => {
     const form = new FormData();
@@ -396,11 +386,9 @@ export const api = {
     return http.post<JobAttatch[]>(`/jobs/${id}/attachments`, form, { timeoutMs: 60_000 });
   },
   deleteJobFile: (id: string, attId: string) => http.delete<void>(`/jobs/${id}/attachments/${attId}`),
-  /** แชทของงาน: after = id ข้อความล่าสุดที่เห็นแล้ว (ได้เฉพาะที่ใหม่กว่า) */
   getJobMessages: (id: string, after?: string) =>
     http.get<JobMessageList>(`/jobs/${id}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`),
   sendJobMessage: (id: string, body: string) => http.post<JobMessage>(`/jobs/${id}/messages`, { body }),
-  /** ตัวไฟล์ (ต้องแนบ token จึงดึงเป็น blob แล้วทำ object URL) */
   getJobFile: (id: string, attId: string) =>
     http.get<Blob>(`/jobs/${id}/attachments/${attId}/file`, { responseType: "blob", timeoutMs: 30_000 }),
 
@@ -413,10 +401,8 @@ export const api = {
   approveJob: (id: string) => http.patch<{ id: string; statusId: number }>(`/jobs/${id}/approve`),
   returnJob: (id: string, note: string) =>
     http.patch<{ id: string; statusId: number }>(`/jobs/${id}/return`, { note }),
-  // ── แอดมิน: งานที่บริษัทปฏิเสธ + ย้ายงานไปให้บริษัทอื่น ──
   listRejectedJobs: (params: { q?: string; page?: number; pageSize?: number }) =>
     http.get<RejectedJobList>("/jobs/rejected", { params }),
-  /** ย้ายงานไปให้บริษัทอื่น: งานกลับเป็น "แจ้งงาน" ของบริษัทใหม่ (note เป็นข้อมูลภายใน ไม่แสดงให้บริษัทใหม่เห็น) */
   reassignJob: (id: string, input: { venderCode: string; note?: string }) =>
     http.patch<{ id: string; venderCode: string }>(`/jobs/${id}/reassign`, input),
 
