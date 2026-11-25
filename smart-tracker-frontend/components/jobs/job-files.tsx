@@ -1,11 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { CameraIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, Loader2Icon } from "lucide-react";
+import {
+  CameraIcon,
+  FileIcon,
+  FileSpreadsheetIcon,
+  FileTextIcon,
+  Loader2Icon,
+  Maximize2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api, type JobAttatch } from "@/lib/api";
-import { BlobImage } from "./job-photos";
+import { BlobImage } from "./blob-image";
+import { EXPANDED_MODAL, ZoomableImage } from "./zoomable-image";
 
 type FileType = "image" | "pdf" | "sheet" | "doc" | "other";
 
@@ -44,7 +52,7 @@ function formatSize(bytes: number): string {
 /**
  * การ์ด "ไฟล์แนบ" (Figma): ไฟล์ที่ OPS แนบมากับงาน (รูป/PDF/Excel ฯลฯ) แถวละไฟล์ ชื่อ + ขนาด
  * แสดงการ์ดเสมอ แม้ไม่มีไฟล์ (ขึ้นข้อความว่าไม่มี) เพื่อให้หน้ารายละเอียดมีโครงครบตาม Figma
- *  - รูป: กดเพื่อดูขยาย
+ *  - รูป: กดเพื่อดู modal เล็ก → ปุ่มมุมรูปขยายเป็นเต็มจอ ซูมได้ (ปุ่ม ± / แตะสองครั้ง / บีบนิ้ว)
  *  - PDF: เปิดในแท็บใหม่
  *  - ไฟล์อื่น (Excel/Word ฯลฯ): ดาวน์โหลดไปเปิดเอง
  * ไฟล์ดึงผ่าน API ที่ตรวจสิทธิ์ (ต้องแนบ token) แล้วทำ object URL จึงเปิดด้วยลิงก์ตรง ๆ ไม่ได้
@@ -52,13 +60,20 @@ function formatSize(bytes: number): string {
  */
 export function JobFiles({ jobId, attachments }: { jobId: string; attachments: JobAttatch[] }) {
   const [viewing, setViewing] = useState<JobAttatch | null>(null);
+  const [expanded, setExpanded] = useState(false); // modal ดูรูป: เล็ก ↔ ขยายเต็มจอ (ซูมได้)
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const files = attachments.filter((a) => a.kind === "report" || a.kind === "document");
 
+  function closeViewer() {
+    setViewing(null);
+    setExpanded(false);
+  }
+
   async function onOpen(a: JobAttatch) {
     const type = fileType(a);
     if (type === "image") {
+      setExpanded(false);
       setViewing(a);
       return;
     }
@@ -117,13 +132,29 @@ export function JobFiles({ jobId, attachments }: { jobId: string; attachments: J
         })}
       </ul>
 
-      <Dialog open={viewing !== null} onOpenChange={(o) => !o && setViewing(null)}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto">
-          <DialogHeader>
+      <Dialog open={viewing !== null} onOpenChange={(o) => !o && closeViewer()}>
+        <DialogContent className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] overflow-y-auto"}>
+          <DialogHeader className={expanded ? "shrink-0 pr-8" : undefined}>
             <DialogDescription className="text-left text-xs font-medium">ไฟล์แนบ</DialogDescription>
-            <DialogTitle className="text-left break-all">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>
+            <DialogTitle className="text-left leading-snug break-all">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>
           </DialogHeader>
-          {viewing && <BlobImage jobId={jobId} item={viewing} className="w-full rounded-2xl border" />}
+          {viewing &&
+            (expanded ? (
+              <ZoomableImage jobId={jobId} item={viewing} onShrink={() => setExpanded(false)} />
+            ) : (
+              <div className="relative">
+                <BlobImage jobId={jobId} item={viewing} className="w-full rounded-2xl border" />
+                <button
+                  type="button"
+                  aria-label="ขยายรูปเต็มจอและซูม"
+                  onClick={() => setExpanded(true)}
+                  className="absolute right-2 bottom-2 flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1.5 text-xs font-medium text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+                >
+                  <Maximize2Icon className="size-3.5" />
+                  ขยาย
+                </button>
+              </div>
+            ))}
         </DialogContent>
       </Dialog>
     </section>

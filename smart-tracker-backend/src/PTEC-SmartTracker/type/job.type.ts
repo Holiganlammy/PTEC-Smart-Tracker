@@ -38,6 +38,12 @@ export interface JobItem {
   reporterName: string | null;
   reporterPhone: string | null;
   address: string | null;
+  /** งานย่อย: id ของงานแม่ที่มอบหมายต่อมา (null = งานหลัก/ลูกค้าตรง) */
+  parentJobId: string | null;
+  /** เฉพาะรายการงาน: งานย่อย → ชื่อบริษัทที่มอบหมายต่อมา */
+  parentVenderName?: string | null;
+  /** เฉพาะรายการงาน: งานหลัก → จำนวนงานย่อยที่มอบหมายต่อ (ไม่นับที่ยกเลิก) */
+  subJobCount?: number;
 }
 
 /** ประเภทงานของ OPS (ตาราง JobType) */
@@ -89,12 +95,14 @@ export interface JobFilterOptions {
 /** แถวดิบจากฐานข้อมูลก่อนแปลงเป็น JobItem (closed เป็น bit/number, requestedAt เป็น Date) */
 export type JobRow = Omit<
   JobItem,
-  'closed' | 'requestedAt' | 'assigneeName'
+  'closed' | 'requestedAt' | 'assigneeName' | 'parentVenderName' | 'subJobCount'
 > & {
   closed: boolean | number;
   requestedAt: Date;
   assigneeFirstName: string | null;
   assigneeLastName: string | null;
+  /** บริษัทของงานแม่ (ใช้หาชื่อบริษัทที่มอบหมายต่อมา — ไม่ส่งออกตรง ๆ) */
+  parentVenderCode: string | null;
 };
 
 /** เหตุการณ์เปลี่ยนสถานะของงาน (จาก Jobs_Logs) ใช้แสดง timeline ในหน้ารายละเอียด */
@@ -136,6 +144,42 @@ export interface JobTeamMember {
   kind: 'accepted' | 'assigned';
 }
 
+/** งานย่อยที่ผู้รับเหมาหลักมอบหมายต่อให้บริษัทอื่น (การ์ด "มอบหมายงานผู้รับเหมา" ในหน้ารายละเอียดงานแม่) */
+export interface SubJobItem {
+  id: string;
+  jobCode: string;
+  venderCode: string;
+  venderName: string | null;
+  statusId: number;
+  statusCode: string;
+  statusName: string;
+  /** ขอบเขตงานที่มอบหมาย */
+  scope: string | null;
+  /** กำหนดเสร็จ YYYY-MM-DD (แยกจาก Jobs.due_at) */
+  dueDate: string | null;
+  /** เวลากำหนดเสร็จ HH:mm (แยกจาก Jobs.due_at) */
+  dueTime: string | null;
+  /** คนที่กดรับงานย่อย (null = ยังไม่มีใครรับ) */
+  acceptedByName: string | null;
+  acceptedByPhone: string | null;
+  /** ยกเลิกงานย่อยนี้ได้ (ผู้ใช้เป็นผู้จ่ายงาน และยังไม่มีใครรับ) */
+  canCancel: boolean;
+}
+
+/** ฝั่งงานย่อย: ใครมอบหมายต่อมาให้ (แสดงเป็นแบนเนอร์ "รับช่วงจาก …" และการ์ดขอบเขตงาน) */
+export interface SubJobOrigin {
+  parentJobId: string;
+  parentJobCode: string;
+  parentOpsJobCode: string | null;
+  parentVenderName: string | null;
+  assignedByName: string | null;
+  dueDate: string | null;
+  /** เวลากำหนดเสร็จ HH:mm */
+  dueTime: string | null;
+  /** หมายเหตุที่ผู้รับเหมาหลักเขียนไว้ตอนมอบหมาย */
+  note: string | null;
+}
+
 /** รายละเอียดงานเต็ม (GET /jobs/:id) — อ่านจากตาราง Jobs ของเราทั้งหมด */
 export interface JobDetail extends JobItem {
   /** ทีมรับผิดชอบ เรียงตามลำดับที่เข้ามาร่วมงาน (ว่าง = ยังไม่มีผู้รับผิดชอบ) */
@@ -158,4 +202,10 @@ export interface JobDetail extends JobItem {
   /** ข้อมูลการส่งงานซ่อม */
   repairedAt: string | null;
   repairDetails: string | null;
+  /** งานย่อยที่มอบหมายต่อให้บริษัทอื่น (ว่างสำหรับงานย่อยเอง/งานที่ยังไม่มี) */
+  subJobs: SubJobItem[];
+  /** ผู้ใช้คนนี้เพิ่มงานย่อยได้ตอนนี้ (ปุ่ม "+ เพิ่มผู้รับเหมา") */
+  canAddSubJob: boolean;
+  /** มีค่าเมื่อเป็นงานย่อย — ใครมอบหมายต่อมาให้ */
+  subJobOrigin: SubJobOrigin | null;
 }

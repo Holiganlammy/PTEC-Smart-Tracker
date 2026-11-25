@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { FileIcon, ImagePlusIcon, Loader2Icon } from "lucide-react";
+import { useRef, useState } from "react";
+import { FileIcon, ImagePlusIcon, Loader2Icon, Maximize2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api, type AttatchKind, type JobAttatch, type UploadKind } from "@/lib/api";
 import { compressImage } from "@/lib/image";
+import { BlobImage } from "./blob-image";
+import { EXPANDED_MODAL, ZoomableImage } from "./zoomable-image";
 
 const uploadedAtFormat = new Intl.DateTimeFormat("th-TH", {
   day: "numeric",
@@ -45,8 +47,19 @@ export function JobPhotos({
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [viewing, setViewing] = useState<JobAttatch | null>(null);
+  const [expanded, setExpanded] = useState(false); // modal ดูรูป: เล็ก ↔ ขยายเต็มจอ (ซูมได้)
 
   if (items.length === 0 && !uploadable) return null;
+
+  function openViewer(a: JobAttatch) {
+    setExpanded(false);
+    setViewing(a);
+  }
+
+  function closeViewer() {
+    setViewing(null);
+    setExpanded(false);
+  }
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
@@ -71,7 +84,7 @@ export function JobPhotos({
     try {
       await api.deleteJobFile(jobId, a.id);
       onChange(attachments.filter((x) => x.id !== a.id));
-      setViewing(null);
+      closeViewer();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "ลบไม่สำเร็จ");
     } finally {
@@ -83,7 +96,7 @@ export function JobPhotos({
     <div className="mt-2.5 space-y-2">
       <div className="flex flex-wrap gap-2.5">
         {items.map((a) => (
-          <Thumb key={a.id} jobId={jobId} item={a} onOpen={() => setViewing(a)} />
+          <Thumb key={a.id} jobId={jobId} item={a} onOpen={() => openViewer(a)} />
         ))}
         {uploadable && (
           <>
@@ -104,22 +117,38 @@ export function JobPhotos({
         {items.length > 0 ? `แนบรูปแล้ว ${items.length} รูป · กดที่รูปเพื่อดูขยาย` : "ยังไม่มีรูปในขั้นตอนนี้"}
       </p>
 
-      <Dialog open={viewing !== null} onOpenChange={(o) => !o && !deleting && setViewing(null)}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto">
-          <DialogHeader>
+      <Dialog open={viewing !== null} onOpenChange={(o) => !o && !deleting && closeViewer()}>
+        {/* grid-cols-[minmax(0,1fr)]: ชื่อไฟล์ยาวไม่ดันเนื้อหาให้กว้างเกินกรอบ modal */}
+        <DialogContent className={expanded ? EXPANDED_MODAL : "max-h-[90dvh] grid-cols-[minmax(0,1fr)] overflow-y-auto"}>
+          <DialogHeader className={expanded ? "shrink-0 pr-8" : undefined}>
             <DialogDescription className="text-left text-xs font-medium">รูปแนบ · {stepTitle}</DialogDescription>
-            <DialogTitle className="text-left">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>
+            <DialogTitle className="text-left leading-snug break-all">{viewing?.originalName ?? "รูปภาพ"}</DialogTitle>
           </DialogHeader>
           {viewing && (
             <>
-              <BlobImage jobId={jobId} item={viewing} className="w-full rounded-2xl border" />
-              <p className="text-xs text-muted-foreground">
+              {expanded ? (
+                <ZoomableImage jobId={jobId} item={viewing} onShrink={() => setExpanded(false)} />
+              ) : (
+                <div className="relative">
+                  <BlobImage jobId={jobId} item={viewing} className="w-full rounded-2xl border" />
+                  <button
+                    type="button"
+                    aria-label="ขยายรูปเต็มจอและซูม"
+                    onClick={() => setExpanded(true)}
+                    className="absolute right-2 bottom-2 flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1.5 text-xs font-medium text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+                  >
+                    <Maximize2Icon className="size-3.5" />
+                    ขยาย
+                  </button>
+                </div>
+              )}
+              <p className="shrink-0 text-xs text-muted-foreground">
                 {viewing.source === "ops" ? "จาก OPS" : `แนบโดย ${viewing.uploadedByName ?? "ไม่ทราบชื่อ"}`}
                 {" · "}
                 {uploadedAtFormat.format(new Date(viewing.createdAt))} น.
               </p>
               {viewing.canDelete && (
-                <Button className="h-10 self-start rounded-xl px-5" disabled={deleting} onClick={() => onDelete(viewing)}>
+                <Button className="h-10 shrink-0 self-start rounded-xl px-5" disabled={deleting} onClick={() => onDelete(viewing)}>
                   {deleting ? "กำลังลบ…" : "ลบรูปนี้"}
                 </Button>
               )}
@@ -149,34 +178,4 @@ function Thumb({ jobId, item, onOpen }: { jobId: string; item: JobAttatch; onOpe
       <BlobImage jobId={jobId} item={item} className="size-full object-cover" />
     </button>
   );
-}
-
-/** รูปที่ดึงผ่าน API ที่ต้องมี token (img src ธรรมดาแนบ Authorization ไม่ได้) */
-export function BlobImage({ jobId, item, className }: { jobId: string; item: JobAttatch; className?: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let url: string | null = null;
-    let cancelled = false;
-    api
-      .getJobFile(jobId, item.id)
-      .then((blob) => {
-        if (cancelled) return;
-        url = URL.createObjectURL(blob);
-        setSrc(url);
-      })
-      .catch(() => !cancelled && setFailed(true));
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [jobId, item.id]);
-
-  if (failed) {
-    return <span className="grid size-full min-h-14 place-items-center p-1 text-center text-[10px] text-muted-foreground">โหลดรูปไม่ได้</span>;
-  }
-  if (!src) return <span className="block size-full min-h-14 animate-pulse bg-muted" />;
-  // eslint-disable-next-line @next/next/no-img-element -- blob URL ใช้ next/image ไม่ได้
-  return <img src={src} alt={item.originalName ?? "รูปงาน"} className={className} />;
 }

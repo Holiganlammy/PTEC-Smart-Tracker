@@ -104,6 +104,12 @@ export type Job = {
   reporterName: string | null;
   reporterPhone: string | null;
   address: string | null;
+  /** งานย่อย: id ของงานแม่ที่มอบหมายต่อมา (null = งานหลัก/ลูกค้าตรง) */
+  parentJobId: string | null;
+  /** เฉพาะรายการงาน: งานย่อย → ชื่อบริษัทที่มอบหมายต่อมา */
+  parentVenderName?: string | null;
+  /** เฉพาะรายการงาน: งานหลัก → จำนวนงานย่อยที่มอบหมายต่อ (ไม่นับที่ยกเลิก) */
+  subJobCount?: number;
 };
 
 /** จำนวนงานแต่ละกลุ่ม (ตามตัวกรองที่เลือกอยู่) */
@@ -222,6 +228,54 @@ export type JobTeamMember = {
   kind: "accepted" | "assigned";
 };
 
+/** งานย่อยที่ผู้รับเหมาหลักมอบหมายต่อให้บริษัทอื่น (การ์ด "มอบหมายงานผู้รับเหมา") */
+export type SubJob = {
+  id: string;
+  jobCode: string;
+  venderCode: string;
+  venderName: string | null;
+  statusId: number;
+  statusCode: string;
+  statusName: string;
+  /** ขอบเขตงานที่มอบหมาย */
+  scope: string | null;
+  /** กำหนดเสร็จ YYYY-MM-DD */
+  dueDate: string | null;
+  /** เวลากำหนดเสร็จ HH:mm (null = งานย่อยเก่า ให้ถือเป็น 18:00) */
+  dueTime: string | null;
+  /** คนที่กดรับงานย่อย (null = ยังไม่มีใครรับ) */
+  acceptedByName: string | null;
+  acceptedByPhone: string | null;
+  /** ยกเลิกได้ (ผู้ใช้เป็นผู้จ่ายงาน และยังไม่มีใครรับ) */
+  canCancel: boolean;
+};
+
+/** ฝั่งงานย่อย: ใครมอบหมายต่อมาให้ */
+export type SubJobOrigin = {
+  parentJobId: string;
+  parentJobCode: string;
+  parentOpsJobCode: string | null;
+  parentVenderName: string | null;
+  assignedByName: string | null;
+  dueDate: string | null;
+  /** เวลากำหนดเสร็จ HH:mm (null = งานย่อยเก่า ให้ถือเป็น 18:00) */
+  dueTime: string | null;
+  /** หมายเหตุที่ผู้รับเหมาหลักเขียนตอนมอบหมาย */
+  note: string | null;
+};
+
+/** ข้อมูลที่ส่งตอนมอบหมายงานย่อย (รูปประกอบแนบไปในคำขอเดียวกัน) */
+export type AddSubJobInput = {
+  venderCode: string;
+  scope: string;
+  /** กำหนดเสร็จ YYYY-MM-DD */
+  dueDate: string;
+  /** เวลากำหนดเสร็จ HH:mm */
+  dueTime: string;
+  note?: string;
+  files?: File[];
+};
+
 /** รายละเอียดงานเต็ม */
 export type JobDetail = Job & {
   /** ว่าง = ยังไม่มีผู้รับผิดชอบ */
@@ -240,6 +294,12 @@ export type JobDetail = Job & {
   /** ข้อมูลการส่งงานซ่อม (มีเมื่อส่งงานแล้ว) */
   repairedAt: string | null;
   repairDetails: string | null;
+  /** งานย่อยที่มอบหมายต่อให้บริษัทอื่น */
+  subJobs: SubJob[];
+  /** ผู้ใช้คนนี้เพิ่มงานย่อยได้ตอนนี้ (server เป็นผู้ตัดสิน) */
+  canAddSubJob: boolean;
+  /** มีค่าเมื่อเป็นงานย่อย */
+  subJobOrigin: SubJobOrigin | null;
 };
 
 /** งานในคิวตรวจของแอดมิน (มีชื่อบริษัทผู้รับเหมา) */
@@ -288,6 +348,8 @@ export const api = {
     page?: number;
     pageSize?: number;
     filters?: JobFilters;
+    /** เฉพาะแอดมิน: ดูงานของบริษัทอื่น (ผู้ใช้ทั่วไปเซิร์ฟเวอร์บังคับเป็นบริษัทตัวเอง) */
+    venderCode?: string;
   }) => {
     const { filters, ...rest } = params;
     return http.get<JobList>("/jobs", {
@@ -299,7 +361,8 @@ export const api = {
       },
     });
   },
-  listJobFilters: () => http.get<JobFilterOptions>("/jobs/filters"),
+  listJobFilters: (venderCode?: string) =>
+    http.get<JobFilterOptions>("/jobs/filters", { params: { venderCode: venderCode || undefined } }),
   getJob: (id: string) => http.get<JobDetail>(`/jobs/${id}`),
   /** เปลี่ยนสถานะงาน (รับงาน/เริ่ม/รออะไหล่/ส่งงาน) พร้อมแนบรูป — คืนรายละเอียดงานล่าสุด */
   changeJobStatus: (id: string, input: ChangeJobStatusInput) => {
@@ -312,6 +375,19 @@ export const api = {
     for (const f of input.beforeFiles ?? []) form.append("beforeFiles", f, f.name);
     return http.post<JobDetail>(`/jobs/${id}/status`, form, { timeoutMs: 90_000 });
   },
+  /** มอบหมายงานย่อยให้บริษัทผู้รับเหมาช่วง พร้อมรูปประกอบ — คืนรายละเอียดงานแม่ล่าสุด */
+  addSubJob: (id: string, input: AddSubJobInput) => {
+    const form = new FormData();
+    form.append("venderCode", input.venderCode);
+    form.append("scope", input.scope);
+    form.append("dueDate", input.dueDate);
+    form.append("dueTime", input.dueTime);
+    if (input.note) form.append("note", input.note);
+    for (const f of input.files ?? []) form.append("files", f, f.name);
+    return http.post<JobDetail>(`/jobs/${id}/subjobs`, form, { timeoutMs: 90_000 });
+  },
+  /** ยกเลิกงานย่อยที่ยังไม่มีใครรับ — คืนรายละเอียดงานแม่ล่าสุด */
+  cancelSubJob: (id: string, subId: string) => http.patch<JobDetail>(`/jobs/${id}/subjobs/${subId}/cancel`),
   /** อัปโหลดรูปของงาน (ชนิด kind ตามขั้นตอน) */
   uploadJobFiles: (id: string, kind: UploadKind, files: File[]) => {
     const form = new FormData();

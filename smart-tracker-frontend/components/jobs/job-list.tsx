@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BuildingIcon,
   HashIcon,
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { VenderCombobox } from "@/components/admin/vender-combobox";
 import {
   api,
   RoleId,
@@ -25,6 +26,7 @@ import {
   type JobFilterOptions,
   type JobFilters,
   type JobGroup,
+  type Vender,
 } from "@/lib/api";
 import { useMemberGate } from "@/lib/use-member-gate";
 import { countActiveFilters, EMPTY_FILTERS, JobFilterSheet } from "./job-filter-sheet";
@@ -72,8 +74,18 @@ const timeFormat = new Intl.DateTimeFormat("th-TH", {
   timeZone: "UTC",
 });
 
+/** แอดมินเลือกดูงานของบริษัทไหนก็ได้ (value "" = ยังไม่ได้เลือก) */
+type VenderPicker = {
+  /** null = กำลังโหลดรายชื่อบริษัท */
+  venders: Vender[] | null;
+  value: string;
+  onChange: (venderCode: string) => void;
+};
+
 type ViewProps = {
   venderName: string;
+  /** เฉพาะแอดมิน: แทนชื่อบริษัทด้วยตัวเลือกบริษัท */
+  venderPicker?: VenderPicker;
   /** ผู้รับเหมาช่วง: เห็นเฉพาะงานที่ได้รับมอบหมาย */
   isSub?: boolean;
   group: JobGroup;
@@ -131,6 +143,7 @@ function JobCardActions({ job }: { job: Job }) {
 /** ส่วนแสดงผลของหน้ารายการงาน (ไม่ยุ่งกับ API) */
 export function JobListView({
   venderName,
+  venderPicker,
   isSub,
   group,
   onGroupChange,
@@ -150,17 +163,44 @@ export function JobListView({
   const [filterOpen, setFilterOpen] = useState(false);
   const activeFilters = countActiveFilters(filters);
 
+  const header = venderPicker ? (
+    <div className="space-y-1.5">
+      <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <BuildingIcon className="size-3.5 shrink-0" />
+        ดูงานของบริษัท (แอดมินเลือกได้ทุกบริษัท)
+      </p>
+      <VenderCombobox
+        venders={venderPicker.venders ?? []}
+        value={venderPicker.value}
+        onChange={venderPicker.onChange}
+        disabled={venderPicker.venders === null}
+      />
+    </div>
+  ) : (
+    <div className="flex items-center gap-2.5 rounded-2xl bg-brand/10 px-3.5 py-3 text-brand">
+      <BuildingIcon className="size-4 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{venderName}</span>
+      {isSub && (
+        <span className="shrink-0 rounded-full bg-sub-accent/10 px-2.5 py-0.5 text-xs font-medium text-sub-accent">
+          ผู้รับเหมาช่วง
+        </span>
+      )}
+    </div>
+  );
+
+  // แอดมินที่ยังไม่ได้เลือกบริษัท: ยังไม่มีรายการให้แสดง
+  if (venderPicker && venderPicker.value === "") {
+    return (
+      <div className="space-y-3 p-4">
+        {header}
+        <p className="py-10 text-center text-sm text-muted-foreground">เลือกบริษัทเพื่อดูรายการงาน</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 p-4">
-      <div className="flex items-center gap-2.5 rounded-2xl bg-brand/10 px-3.5 py-3 text-brand">
-        <BuildingIcon className="size-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{venderName}</span>
-        {isSub && (
-          <span className="shrink-0 rounded-full bg-sub-accent/10 px-2.5 py-0.5 text-xs font-medium text-sub-accent">
-            ผู้รับเหมาช่วง
-          </span>
-        )}
-      </div>
+      {header}
 
       <div className="flex items-center gap-2">
         <div className="relative min-w-0 flex-1">
@@ -295,6 +335,7 @@ export function JobCard({
 
         <div className="space-y-1">
           <h3 className="font-heading text-base leading-snug font-medium">{job.jobType ?? "งานซ่อม"}</h3>
+          <OriginTags job={job} />
           {job.details && (
             <p className="line-clamp-2 text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
               {job.details}
@@ -339,6 +380,37 @@ export function JobCard({
   );
 }
 
+/**
+ * ป้ายบอกที่มาของงาน (Figma): งานย่อย = "รับช่วงจาก <บริษัท>" (ม่วง), งานหลัก = "ลูกค้าตรง" (เทา)
+ * งานหลักที่มอบหมายต่อแล้วมีป้ายบอกจำนวนงานย่อยเพิ่ม — งานที่ยังรอแอดมินตรวจไม่แสดงป้าย "ลูกค้าตรง"
+ */
+function OriginTags({ job }: { job: Job }) {
+  const tags: { label: string; className: string }[] = [];
+  if (job.parentJobId !== null) {
+    tags.push({
+      label: `รับช่วงจาก ${job.parentVenderName ?? "ผู้รับเหมาหลัก"}`,
+      className: "bg-sub-accent/10 text-sub-accent",
+    });
+  } else {
+    if (job.statusCode !== "pending_review" && job.statusCode !== "returned") {
+      tags.push({ label: "ลูกค้าตรง", className: "bg-muted text-muted-foreground" });
+    }
+    if ((job.subJobCount ?? 0) > 0) {
+      tags.push({ label: `มอบหมายต่อ ${job.subJobCount} งานย่อย`, className: "bg-brand/10 text-brand" });
+    }
+  }
+  if (tags.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 py-0.5">
+      {tags.map((t) => (
+        <span key={t.label} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${t.className}`}>
+          {t.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function Row({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
@@ -348,9 +420,26 @@ function Row({ icon, children }: { icon: React.ReactNode; children: React.ReactN
   );
 }
 
-/** รายการงานของบริษัทผู้รับเหมาที่ผู้ใช้สังกัด (ผู้รับเหมาช่วงเห็นเฉพาะงานที่ได้รับมอบหมาย) */
+/** แอดมินจำบริษัทที่เลือกดูไว้ (กดกลับจากหน้ารายละเอียดแล้วยังอยู่บริษัทเดิม) */
+const PICKED_VENDER_KEY = "jobList.pickedVender";
+
+function readPickedVender(): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage.getItem(PICKED_VENDER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * รายการงานของบริษัทผู้รับเหมาที่ผู้ใช้สังกัด (ผู้รับเหมาช่วงเห็นเฉพาะงานที่ได้รับมอบหมาย)
+ * แอดมิน: เลือกดูงานของบริษัทไหนก็ได้ (ค่าเริ่มต้น = บริษัทของตัวเอง)
+ */
 export function JobList() {
   const gate = useMemberGate();
+  const isAdmin = gate.name === "ready" && gate.me.roleId === RoleId.ADMIN;
+  const [picked, setPicked] = useState<string | null>(readPickedVender); // บริษัทที่แอดมินเลือก (null = ยังไม่เคยเลือก)
+  const [venders, setVenders] = useState<Vender[] | null>(null);
   const [group, setGroup] = useState<JobGroup>("all");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -370,11 +459,15 @@ export function JobList() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // บริษัทที่ใช้ดึงงาน: แอดมิน = ที่เลือก (หรือบริษัทตัวเอง) / คนอื่น = undefined (เซิร์ฟเวอร์ใช้บริษัทของผู้ใช้เอง)
+  const ownVender = gate.name === "ready" ? (gate.me.venderCode ?? "") : "";
+  const venderCode = isAdmin ? (picked ?? ownVender) : undefined;
+
   const load = useCallback(
     async (nextPage: number) => {
       const id = ++requestId.current;
       try {
-        const res = await api.listJobs({ group, q: debouncedQuery || undefined, page: nextPage, filters });
+        const res = await api.listJobs({ group, q: debouncedQuery || undefined, page: nextPage, filters, venderCode });
         if (id !== requestId.current) return;
         setError(null);
         setTotal(res.total);
@@ -388,28 +481,64 @@ export function JobList() {
         else toast.error("โหลดเพิ่มไม่สำเร็จ", { description: message });
       }
     },
-    [group, debouncedQuery, filters],
+    [group, debouncedQuery, filters, venderCode],
   );
 
-  const ready = gate.name === "ready";
+  // แอดมินที่ยังไม่มีบริษัทให้ดู (ไม่ผูกบริษัท และยังไม่ได้เลือก) ต้องรอเลือกก่อน ไม่ยิง API
+  const ready = gate.name === "ready" && (!isAdmin || !!venderCode);
   useEffect(() => {
     if (!ready) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(1);
   }, [ready, load]);
 
-  // ตัวเลือกของตัวกรอง (สถานะ/สาขา) โหลดครั้งเดียว
+  // ตัวเลือกของตัวกรอง (สถานะ/สาขา) โหลดใหม่เมื่อเปลี่ยนบริษัท (สาขาต่างกันตามบริษัท)
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
     api
-      .listJobFilters()
+      .listJobFilters(venderCode)
       .then((o) => !cancelled && setFilterOptions(o))
       .catch(() => !cancelled && setFilterOptions({ statuses: [], branches: [] })); // ตัวกรองใช้ไม่ได้ แต่รายการยังดูได้
     return () => {
       cancelled = true;
     };
-  }, [ready]);
+  }, [ready, venderCode]);
+
+  // รายชื่อบริษัทสำหรับตัวเลือกของแอดมิน
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    api
+      .getVenders()
+      .then((list) => !cancelled && setVenders(list))
+      .catch(() => !cancelled && setVenders([])); // โหลดไม่ได้ก็ยังดูบริษัทตัวเองได้
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
+
+  // บริษัทของตัวเอง/ที่เลือกไว้อาจไม่อยู่ในรายการ (เช่นรหัสที่มีแค่ใน Vendor) — เติมเข้าไปให้ตัวเลือกแสดงชื่อได้
+  const venderOptions = useMemo(() => {
+    if (!venders || !venderCode || venders.some((v) => v.venderCode === venderCode)) return venders;
+    const name = gate.name === "ready" && venderCode === gate.me.venderCode ? gate.me.venderName : null;
+    return [{ venderCode, venderName: name ?? venderCode }, ...venders];
+  }, [venders, venderCode, gate]);
+
+  function changeVender(code: string) {
+    try {
+      window.sessionStorage.setItem(PICKED_VENDER_KEY, code);
+    } catch {
+      // เก็บไม่ได้ก็แค่ไม่จำค่าที่เลือก
+    }
+    setPicked(code);
+    // เปลี่ยนบริษัท → ล้างตัวกรอง/จำนวน/รายการของบริษัทเดิม (สาขาและงานเป็นของบริษัทเดิม)
+    setFilters(EMPTY_FILTERS);
+    setFilterOptions(null);
+    setCounts(null);
+    setJobs(null);
+    setError(null);
+  }
 
   async function loadMore() {
     setLoadingMore(true);
@@ -427,6 +556,9 @@ export function JobList() {
   return (
     <JobListView
         venderName={gate.me.venderName ?? gate.me.venderCode ?? "ยังไม่ระบุบริษัท"}
+        venderPicker={
+          isAdmin ? { venders: venderOptions, value: venderCode ?? "", onChange: changeVender } : undefined
+        }
         isSub={gate.me.roleId === RoleId.SUB_CONTRACTOR}
         group={group}
         onGroupChange={(g) => {

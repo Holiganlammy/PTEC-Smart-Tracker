@@ -11,6 +11,7 @@ import {
   MapPinIcon,
   PhoneIcon,
   UserIcon,
+  UserPlusIcon,
   WrenchIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ import { JobChat } from "./job-chat";
 import { JobFiles } from "./job-files";
 import { JobPhotos } from "./job-photos";
 import { STATUS_TONE, TONES } from "./job-list";
+import { DEFAULT_DUE_TIME, formatSubDue, SubJobsCard } from "./job-subjobs";
 import { useJob } from "./use-job";
 
 /** ขั้นตอนของงาน (ตรงกับแถบสถานะใน Figma) — statuses คือรหัสสถานะ (Job_Status) ที่อยู่ในขั้นนั้น */
@@ -87,7 +89,7 @@ const dateOnlyFormat = new Intl.DateTimeFormat("th-TH", {
 });
 
 /** SLA เป็นชั่วโมง → ข้อความ (หารด้วย 24 ลงตัวตั้งแต่ 2 วันขึ้นไปแสดงเป็นวัน) */
-function formatSla(hours: number) {
+export function formatSla(hours: number) {
   return hours >= 48 && hours % 24 === 0 ? `${hours / 24} วัน` : `${hours} ชั่วโมง`;
 }
 
@@ -189,8 +191,33 @@ export function JobDetailBody({
     ? new Date(job.opsRequestedAt ?? job.requestedAt).getTime() + sla * 3600_000 - (now - new Date().getTimezoneOffset() * 60_000)
     : 0;
 
+  const origin = job.subJobOrigin;
+
+  // งานย่อย: ไม่มี SLA ของตัวเอง — นับถอยหลังถึงกำหนดเสร็จที่ผู้มอบหมายตั้ง (วันที่ + เวลา; งานเก่าไม่มีเวลา = 18:00)
+  const subDueDate = origin?.dueDate ?? null;
+  const showDue = subDueDate !== null && !job.closed && !rejected && !cancelled;
+  const dueRemainingMs = showDue
+    ? new Date(`${subDueDate}T${origin?.dueTime ?? DEFAULT_DUE_TIME}:00Z`).getTime() -
+      (now - new Date().getTimezoneOffset() * 60_000)
+    : 0;
+
   return (
     <div className="space-y-4 p-4">
+      {/* งานย่อย: ใครมอบหมายต่อมาให้ (Figma: มุมมองของผู้รับเหมาช่วง) */}
+      {origin && (
+        <section className="flex items-start gap-2.5 rounded-2xl bg-success-soft p-3.5 text-sm text-success">
+          <UserPlusIcon className="mt-0.5 size-4 shrink-0" />
+          <p className="min-w-0 leading-relaxed">
+            งานย่อยของ {origin.parentOpsJobCode ?? origin.parentJobCode}
+            {origin.parentVenderName && <> · รับช่วงจาก {origin.parentVenderName}</>}
+            {origin.assignedByName && <span className="block text-xs opacity-80">มอบหมายโดย {origin.assignedByName}</span>}
+            {origin.dueDate && (
+              <span className="block text-xs opacity-80">กำหนดเสร็จ {formatSubDue(origin.dueDate, origin.dueTime)}</span>
+            )}
+          </p>
+        </section>
+      )}
+
       {/* หัวงาน */}
       <section className="space-y-3 rounded-2xl border bg-card p-4 shadow-sm">
         <div>
@@ -201,6 +228,7 @@ export function JobDetailBody({
           <h2 className="font-heading text-lg leading-snug font-medium">{job.jobType ?? "งานซ่อม"}</h2>
         </div>
         <dl className="space-y-2 border-t pt-3 text-sm text-muted-foreground">
+          {/* งานย่อยก็แสดงผู้แจ้ง/เบอร์ (คัดลอกมาจากงานแม่ตอนมอบหมาย) เพื่อให้รายย่อยประสานสาขาได้ */}
           <InfoRow icon={<UserIcon className="size-4" />}>
             ผู้แจ้ง: {job.reporterName ?? "—"}
             {job.branchName ? ` (${job.branchName})` : ""}
@@ -219,6 +247,22 @@ export function JobDetailBody({
           <ChevronRightIcon className="size-4" />
         </button>
       </section>
+
+      {/* ขอบเขตงานที่ได้รับมอบหมาย (เฉพาะงานย่อย: ขอบเขตอยู่ในรายละเอียดงาน หมายเหตุจากผู้รับเหมาหลักอยู่ในประวัติ) */}
+      {origin && (
+        <section className="space-y-2.5 rounded-2xl border bg-card p-4 shadow-sm">
+          <h3 className="font-heading text-base font-medium">ขอบเขตงานที่ได้รับมอบหมาย</h3>
+          <p className="rounded-xl bg-muted px-3 py-2.5 text-sm leading-relaxed whitespace-pre-line">
+            {job.details ?? "—"}
+          </p>
+          {origin.note && (
+            <p className="flex items-start gap-2 rounded-xl bg-warning/10 px-3 py-2.5 text-xs whitespace-pre-line text-warning">
+              <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
+              <span>หมายเหตุจากผู้รับเหมาหลัก: {origin.note}</span>
+            </p>
+          )}
+        </section>
+      )}
 
       {/* แถบขั้นตอน */}
       {cancelled ? (
@@ -263,6 +307,9 @@ export function JobDetailBody({
         </div>
       </section>
 
+      {/* มอบหมายงานผู้รับเหมา (งานย่อย) — ตำแหน่งตาม Figma: ต่อจากประวัติการดำเนินการ */}
+      <SubJobsCard job={job} onChanged={onJobChange} onReload={onReload} />
+
       {/* สถานะปัจจุบัน + SLA */}
       <section className={`space-y-1.5 rounded-2xl p-4 ${tone.chip}`}>
         <p className="text-sm font-medium">สถานะปัจจุบัน</p>
@@ -273,6 +320,14 @@ export function JobDetailBody({
             {remainingMs >= 0
               ? `SLA เหลือ ${formatDuration(remainingMs)}`
               : `เกิน SLA แล้ว ${formatDuration(remainingMs)}`}
+          </p>
+        )}
+        {showDue && (
+          <p className="flex items-center gap-1.5 text-sm">
+            <ClockIcon className="size-4" />
+            {dueRemainingMs >= 0
+              ? `เหลือ ${formatDuration(dueRemainingMs)} ถึงกำหนดเสร็จ`
+              : `เกินกำหนดเสร็จแล้ว ${formatDuration(dueRemainingMs)}`}
           </p>
         )}
         {job.priority && (job.priority.name || job.priority.slaHours !== null) && (
@@ -554,14 +609,30 @@ function FullDetailDialog({
             }
           />
           {device && <Field label="อุปกรณ์" value={device} />}
-          <Field
-            label="คีย์โดย"
-            value={
-              job.keyedByName
-                ? `${job.keyedByName} (OPS) · ${dateTimeFormat.format(new Date(job.opsRequestedAt ?? job.requestedAt))}`
-                : null
-            }
-          />
+          {job.subJobOrigin ? (
+            <>
+              {/* งานย่อย: ไม่ได้คีย์ผ่าน OPS — แสดงผู้มอบหมาย/บริษัทแม่ และกำหนดเสร็จแทน */}
+              <Field
+                label="มอบหมายโดย"
+                value={`${[job.subJobOrigin.assignedByName, job.subJobOrigin.parentVenderName].filter(Boolean).join(" · ") || "ผู้รับเหมาหลัก"} · ${dateTimeFormat.format(new Date(job.requestedAt))}`}
+              />
+              <Field
+                label="กำหนดเสร็จ"
+                value={
+                  job.subJobOrigin.dueDate ? formatSubDue(job.subJobOrigin.dueDate, job.subJobOrigin.dueTime) : null
+                }
+              />
+            </>
+          ) : (
+            <Field
+              label="คีย์โดย"
+              value={
+                job.keyedByName
+                  ? `${job.keyedByName} (OPS) · ${dateTimeFormat.format(new Date(job.opsRequestedAt ?? job.requestedAt))}`
+                  : null
+              }
+            />
+          )}
           <div className="space-y-1.5 border-t pt-3">
             <dt className="text-xs font-medium text-muted-foreground">รายละเอียดปัญหาที่แจ้ง</dt>
             <dd className="rounded-lg bg-muted px-3 py-2.5 leading-relaxed whitespace-pre-line">

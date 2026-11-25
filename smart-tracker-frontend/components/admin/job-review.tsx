@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckIcon, InboxIcon, PencilIcon, SearchIcon, Undo2Icon } from "lucide-react";
+import { ChevronRightIcon, InboxIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { JobCard } from "@/components/jobs/job-list";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api, ApiError, type ReviewJob } from "@/lib/api";
 import { GateScreen, useAdminGate } from "./admin-gate";
 import { JobEditDialog } from "./job-edit-dialog";
+import { JobReviewDialog } from "./job-review-dialog";
 import { RejectDialog } from "./reject-dialog";
 
 /** คิวตรวจงานจาก OPS (เฉพาะ admin): อนุมัติ = ส่งให้ผู้รับเหมา, ตีกลับ = ส่งกลับพร้อมเหตุผล */
@@ -25,6 +26,8 @@ export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [returning, setReturning] = useState<ReviewJob | null>(null);
   const [editing, setEditing] = useState<ReviewJob | null>(null);
+  const [viewing, setViewing] = useState<ReviewJob | null>(null); // modal ตรวจงาน (แตะการ์ด)
+  const [editFromView, setEditFromView] = useState(false); // แก้ไขจาก modal → แก้เสร็จ/ยกเลิกแล้วกลับไป modal
   const requestId = useRef(0); // กันผลของคำขอเก่าเขียนทับของใหม่
 
   // หน่วงคำค้นเล็กน้อยก่อนยิง API
@@ -96,6 +99,13 @@ export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {
     setTotal((t) => Math.max(0, t - 1));
   }
 
+  /** ปิด dialog แก้ไข — ถ้าเปิดมาจาก modal ตรวจงาน กลับไปที่ modal (พร้อมข้อมูลล่าสุดถ้าบันทึกแล้ว) */
+  function finishEditing(back: ReviewJob | null) {
+    setEditing(null);
+    setEditFromView(false);
+    if (editFromView && back) setViewing(back);
+  }
+
   if (gate.name !== "ready") return <GateScreen gate={gate} />;
 
   return (
@@ -143,41 +153,32 @@ export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {
           </p>
           <div className="space-y-3">
             {jobs.map((job) => (
-              <JobCard
+              // แตะการ์ดเพื่อเปิด modal ตรวจงาน (Figma: ปุ่มอนุมัติ/แก้ไข/ตีกลับอยู่ใน modal)
+              <div
                 key={job.id}
-                job={job}
-                venderName={job.venderName}
-                footer={
-                  <div className="grid grid-cols-3 gap-2 border-t pt-3">
-                    <Button
-                      variant="outline"
-                      className="h-10 rounded-xl"
-                      disabled={busyId === job.id}
-                      onClick={() => setEditing(job)}
-                    >
-                      <PencilIcon className="size-4" />
-                      แก้ไข
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="h-10 rounded-xl"
-                      disabled={busyId === job.id}
-                      onClick={() => setReturning(job)}
-                    >
-                      <Undo2Icon className="size-4" />
-                      ตีกลับ
-                    </Button>
-                    <Button
-                      className="h-10 rounded-xl"
-                      disabled={busyId === job.id}
-                      onClick={() => void act(job, () => api.approveJob(job.id), "อนุมัติแล้ว ส่งให้ผู้รับเหมา").catch(() => {})}
-                    >
-                      <CheckIcon className="size-4" />
-                      อนุมัติ
-                    </Button>
-                  </div>
-                }
-              />
+                role="button"
+                tabIndex={0}
+                aria-label={`ตรวจสอบงาน ${job.jobCode}`}
+                className="block cursor-pointer rounded-2xl outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-brand/50 active:opacity-90"
+                onClick={() => setViewing(job)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setViewing(job);
+                  }
+                }}
+              >
+                <JobCard
+                  job={job}
+                  venderName={job.venderName}
+                  footer={
+                    <div className="flex items-center justify-between border-t pt-3 text-sm font-medium text-brand">
+                      ตรวจสอบและอนุมัติ
+                      <ChevronRightIcon className="size-4" />
+                    </div>
+                  }
+                />
+              </div>
             ))}
           </div>
           {jobs.length < total && (
@@ -193,9 +194,30 @@ export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {
         </>
       )}
 
+      <JobReviewDialog
+        job={viewing}
+        busy={viewing !== null && busyId === viewing.id}
+        onClose={() => setViewing(null)}
+        onApprove={(job) =>
+          // act แจ้ง toast เองและเอาออกจากคิวแล้ว (รวมกรณีงานถูกตรวจไปแล้ว) — ล้มเหลวอื่น ๆ ให้ modal ค้างไว้ลองใหม่
+          void act(job, () => api.approveJob(job.id), "อนุมัติแล้ว ส่งให้ผู้รับเหมา")
+            .then(() => setViewing(null))
+            .catch(() => {})
+        }
+        onEdit={(job) => {
+          setViewing(null);
+          setEditFromView(true);
+          setEditing(job);
+        }}
+        onReturn={(job) => {
+          setViewing(null);
+          setReturning(job);
+        }}
+      />
+
       <JobEditDialog
         job={editing}
-        onClose={() => setEditing(null)}
+        onClose={() => finishEditing(editing)}
         onSave={async (job, values) => {
           try {
             await api.updateJob(job.id, values);
@@ -203,33 +225,26 @@ export function JobReview({ onTotal }: { onTotal?: (total: number) => void } = {
             if (e instanceof ApiError && e.status === 409) {
               toast.info("งานนี้ถูกตรวจไปแล้ว", { description: "แก้ไขไม่ได้ ระบบนำออกจากคิวให้แล้ว" });
               removeFromQueue(job.id);
-              setEditing(null);
+              finishEditing(null);
               return;
             }
             toast.error("บันทึกไม่สำเร็จ", { description: e instanceof Error ? e.message : undefined });
             return; // เปิด dialog ค้างไว้ให้ลองใหม่
           }
           // อัปเดตการ์ดในคิวทันที (ช่องว่าง = ล้างค่า)
-          setJobs(
-            (prev) =>
-              prev?.map((j) =>
-                j.id === job.id
-                  ? {
-                      ...j,
-                      jobType: values.jobType.trim() || null,
-                      branchName: values.branchName.trim() || null,
-                      details: values.details.trim() || null,
-                      brand: values.brand.trim() || null,
-                      model: values.model.trim() || null,
-                      reporterName: values.reporterName.trim() || null,
-                      reporterPhone: values.reporterPhone.trim() || null,
-                      address: values.address.trim() || null,
-                    }
-                  : j,
-              ) ?? prev,
-          );
+          const patch = {
+            jobType: values.jobType.trim() || null,
+            branchName: values.branchName.trim() || null,
+            details: values.details.trim() || null,
+            brand: values.brand.trim() || null,
+            model: values.model.trim() || null,
+            reporterName: values.reporterName.trim() || null,
+            reporterPhone: values.reporterPhone.trim() || null,
+            address: values.address.trim() || null,
+          };
+          setJobs((prev) => prev?.map((j) => (j.id === job.id ? { ...j, ...patch } : j)) ?? prev);
           toast.success("บันทึกแล้ว", { description: job.jobCode });
-          setEditing(null);
+          finishEditing({ ...job, ...patch });
         }}
       />
 

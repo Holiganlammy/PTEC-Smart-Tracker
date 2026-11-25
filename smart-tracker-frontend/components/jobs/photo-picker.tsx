@@ -20,7 +20,6 @@ export function PhotoPicker({
   onChange: (next: File[]) => void;
   max?: number;
   disabled?: boolean;
-  /** true = กรอบแดง (เช่นช่องบังคับที่ยังไม่มีรูป) */
   invalid?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);

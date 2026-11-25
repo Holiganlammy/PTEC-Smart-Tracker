@@ -41,10 +41,30 @@ import type {
   JobTimelineEvent,
   JobTypeItem,
   ReviewJobItem,
+  SubJobItem,
+  SubJobOrigin,
 } from '../type/job.type';
 import { JobAttatchService, type StagedFile } from './job-attatch.service';
-import { canChangeStatus, roleCode, type JobOwnership } from './job-permission';
+import {
+  canAddSubJob,
+  canChangeStatus,
+  roleCode,
+  type JobOwnership,
+} from './job-permission';
 import { VenderService } from './vender.service';
+
+/**
+ * Jobs.due_at (datetime2 เวลาท้องถิ่น ไม่มี timezone) จากฐานข้อมูลอาจมาเป็น Date (อ่านเป็น UTC — ค่าตรงตามที่เก็บ)
+ * หรือสตริง → แยกเป็นวันที่ YYYY-MM-DD กับเวลา HH:mm (API ยังส่ง dueDate/dueTime แยกกัน)
+ */
+export function splitDueAt(v: Date | string | null | undefined): {
+  dueDate: string | null;
+  dueTime: string | null;
+} {
+  if (v === null || v === undefined) return { dueDate: null, dueTime: null };
+  const iso = (typeof v === 'string' ? v : v.toISOString()).replace(' ', 'T');
+  return { dueDate: iso.slice(0, 10), dueTime: iso.slice(11, 16) };
+}
 
 /** สถานะที่ผู้รับเหมาไม่เห็น: รอแอดมินตรวจ / ตีกลับ */
 /** การเปลี่ยนสถานะที่ผู้รับเหมาทำได้: จากสถานะไหน → ไปสถานะไหน, รูปที่แนบเป็นชนิดอะไร */
@@ -142,6 +162,7 @@ export class JobService {
       .createQueryBuilder('j')
       .innerJoin(JobStatus, 's', 's.id = j.statusId')
       .leftJoin(User, 'a', 'a.id = j.assignedTo')
+      .leftJoin(Job, 'p', 'p.id = j.parentJobId')
       .select([
         'j.id AS id',
         'j.jobCode AS jobCode',
@@ -164,6 +185,8 @@ export class JobService {
         'j.assignedTo AS assigneeId',
         'a.firstName AS assigneeFirstName',
         'a.lastName AS assigneeLastName',
+        'j.parentJobId AS parentJobId',
+        'p.venderCode AS parentVenderCode',
       ]);
   }
 
@@ -171,8 +194,10 @@ export class JobService {
   private toItem({
     assigneeFirstName,
     assigneeLastName,
+    parentVenderCode,
     ...r
   }: JobRow): JobItem {
+    void parentVenderCode; // ใช้ใน addSubInfo หาชื่อบริษัทแม่ ไม่ส่งออกรหัสตรง ๆ
     return {
       ...r,
       closed: Boolean(r.closed),
@@ -197,10 +222,48 @@ export class JobService {
       .limit(pageSize)
       .getRawMany<JobRow>();
 
-    return {
-      total,
-      items: rows.map((r) => this.toItem(r)),
-    };
+    const items = rows.map((r) => this.toItem(r));
+    await this.addSubInfo(items, rows);
+    return { total, items };
+  }
+
+  /**
+   * ใส่ข้อมูลงานย่อยให้การ์ดในรายการงาน:
+   *  - งานย่อย → ชื่อบริษัทที่มอบหมายต่อมา (ป้าย "รับช่วงจาก …")
+   *  - งานหลัก → จำนวนงานย่อยที่มอบหมายต่อ (ไม่นับที่ยกเลิก) ใน query เดียวต่อหน้า
+   */
+  private async addSubInfo(items: JobItem[], rows: JobRow[]): Promise<void> {
+    const parentIds = items
+      .filter((i) => i.parentJobId === null)
+      .map((i) => i.id);
+    const [names, counts] = await Promise.all([
+      this.venderService.getNames(
+        rows.map((r) => r.parentVenderCode).filter((c): c is string => !!c),
+      ),
+      parentIds.length
+        ? this.jobs
+            .createQueryBuilder('c')
+            .select('c.parentJobId', 'parentJobId')
+            .addSelect('COUNT(*)', 'n')
+            .where('c.parentJobId IN (:...parentIds)', { parentIds })
+            .andWhere('c.statusId <> :cancelled', {
+              cancelled: JobStatusId.CANCELLED,
+            })
+            .groupBy('c.parentJobId')
+            .getRawMany<{ parentJobId: string; n: number }>()
+        : Promise.resolve([]),
+    ]);
+    const countOf = new Map(
+      counts.map((c) => [String(c.parentJobId), Number(c.n)]),
+    );
+    items.forEach((item, i) => {
+      const code = rows[i].parentVenderCode;
+      if (item.parentJobId !== null) {
+        item.parentVenderName = code ? (names.get(code) ?? null) : null;
+      } else {
+        item.subJobCount = countOf.get(String(item.id)) ?? 0;
+      }
+    });
   }
 
   private applySearch(qb: SelectQueryBuilder<Job>, q?: string) {
@@ -243,16 +306,20 @@ export class JobService {
   /**
    * ขอบเขตงานที่ผู้ใช้เห็นได้: ของบริษัทตัวเอง และไม่รวมสถานะรอตรวจ/ตีกลับ (กรองฝั่ง server)
    * ผู้รับเหมาช่วงเห็นเฉพาะงานที่ได้รับมอบหมายให้ตัวเอง
+   * includeHidden = true เฉพาะตอนแอดมินเปิดดูงานใบเดียว (เช่น ตรวจงานในคิวรอตรวจ) — รายการงานยังซ่อนตามเดิม
    */
   private scope<T extends object>(
     qb: SelectQueryBuilder<T>,
     user: User,
     venderCode: string,
+    includeHidden = false,
   ) {
-    qb.where('j.venderCode = :venderCode', { venderCode }).andWhere(
-      'j.statusId NOT IN (:...hidden)',
-      { hidden: HIDDEN_FROM_CONTRACTOR },
-    );
+    qb.where('j.venderCode = :venderCode', { venderCode });
+    if (!includeHidden) {
+      qb.andWhere('j.statusId NOT IN (:...hidden)', {
+        hidden: HIDDEN_FROM_CONTRACTOR,
+      });
+    }
     if (user.roleId === Number(RoleId.SUB_CONTRACTOR)) {
       qb.andWhere('j.assignedTo = :me', { me: user.id });
     }
@@ -357,10 +424,12 @@ export class JobService {
   /** รายละเอียดงานหนึ่งใบ (ต้องอยู่ในขอบเขตที่ผู้ใช้เห็นได้) — อ่านจากตาราง Jobs ของเราทั้งหมด */
   async getDetail(user: User, id: string): Promise<JobDetail> {
     const venderCode = await this.resolveJobVender(user, id);
-    const qb = this.scope(this.baseQuery(), user, venderCode).andWhere(
-      'j.id = :id',
-      { id },
-    );
+    const qb = this.scope(
+      this.baseQuery(),
+      user,
+      venderCode,
+      Number(user.roleId) === Number(RoleId.ADMIN),
+    ).andWhere('j.id = :id', { id });
     const row = (await qb.limit(1).getRawMany<JobRow>())[0];
     if (!row) throw new NotFoundException('ไม่พบงาน');
 
@@ -371,21 +440,26 @@ export class JobService {
       statusId: Number(row.statusId),
       assignedTo: row.assigneeId,
     });
-    const [timeline, history, attachments, team] = await Promise.all([
-      this.getTimeline(id, Number(user.roleId) === Number(RoleId.ADMIN)),
-      this.getHistory(user, venderCode, {
-        id,
-        branchCode: row.branchCode,
-        jobType: row.jobType,
-        opsJobDetailId: full?.opsJobDetailId ?? null,
-      }),
-      this.attatchService.list(user, {
-        id,
-        statusId: row.statusId,
-        venderCode,
-      }),
-      this.getTeam(venderCode, ownership),
-    ]);
+    const isSubJob = full?.parentJobId != null;
+    const canAdd = canAddSubJob(user, ownership, isSubJob);
+    const [timeline, history, attachments, team, subJobs, subJobOrigin] =
+      await Promise.all([
+        this.getTimeline(id, Number(user.roleId) === Number(RoleId.ADMIN)),
+        this.getHistory(user, venderCode, {
+          id,
+          branchCode: row.branchCode,
+          jobType: row.jobType,
+          opsJobDetailId: full?.opsJobDetailId ?? null,
+        }),
+        this.attatchService.list(user, {
+          id,
+          statusId: row.statusId,
+          venderCode,
+        }),
+        this.getTeam(venderCode, ownership),
+        isSubJob ? Promise.resolve([]) : this.getSubJobs(id, canAdd),
+        full && isSubJob ? this.getSubJobOrigin(full) : Promise.resolve(null),
+      ]);
 
     return {
       ...this.toItem(row),
@@ -407,6 +481,126 @@ export class JobService {
         ? new Date(full.repairedAt).toISOString()
         : null,
       repairDetails: full?.repairDetails ?? null,
+      subJobs,
+      canAddSubJob: canAdd,
+      subJobOrigin,
+    };
+  }
+
+  /**
+   * งานย่อยของงานแม่ (ไม่รวมที่ยกเลิก) เรียงตามที่มอบหมาย — พร้อมชื่อบริษัทและคนที่กดรับ
+   * canManage = ผู้ดูเป็นผู้จ่ายงาน → ยกเลิกงานย่อยที่ยังไม่มีใครรับได้
+   */
+  private async getSubJobs(
+    parentId: string,
+    canManage: boolean,
+  ): Promise<SubJobItem[]> {
+    const rows = await this.jobs
+      .createQueryBuilder('j')
+      .innerJoin(JobStatus, 's', 's.id = j.statusId')
+      .select([
+        'j.id AS id',
+        'j.jobCode AS jobCode',
+        'j.venderCode AS venderCode',
+        'j.statusId AS statusId',
+        's.code AS statusCode',
+        's.nameTh AS statusName',
+        'j.details AS scope',
+        'j.dueAt AS dueAt',
+      ])
+      .where('j.parentJobId = :parentId', { parentId })
+      .andWhere('j.statusId <> :cancelled', {
+        cancelled: JobStatusId.CANCELLED,
+      })
+      .orderBy('j.id', 'ASC')
+      .getRawMany<{
+        id: string;
+        jobCode: string;
+        venderCode: string;
+        statusId: number;
+        statusCode: string;
+        statusName: string;
+        scope: string | null;
+        dueAt: Date | string | null;
+      }>();
+    if (rows.length === 0) return [];
+
+    const [names, accepts] = await Promise.all([
+      this.venderService.getNames(rows.map((r) => r.venderCode)),
+      this.jobs.manager.find(JobLog, {
+        where: {
+          jobId: In(rows.map((r) => r.id)),
+          action: JobLogAction.ACCEPTED,
+        },
+        order: { id: 'DESC' },
+        select: { id: true, jobId: true, actorId: true },
+      }),
+    ]);
+    // คนที่กดรับล่าสุดของแต่ละงานย่อย
+    const acceptorOf = new Map<string, string>();
+    for (const l of accepts) {
+      if (l.actorId && !acceptorOf.has(String(l.jobId))) {
+        acceptorOf.set(String(l.jobId), l.actorId);
+      }
+    }
+    const users = acceptorOf.size
+      ? await this.jobs.manager.find(User, {
+          where: { id: In([...new Set(acceptorOf.values())]) },
+        })
+      : [];
+    const userById = new Map(users.map((u) => [String(u.id), u]));
+
+    return rows.map((r) => {
+      const acceptor = userById.get(String(acceptorOf.get(String(r.id))));
+      return {
+        id: String(r.id),
+        jobCode: r.jobCode,
+        venderCode: r.venderCode,
+        venderName: names.get(r.venderCode) ?? null,
+        statusId: Number(r.statusId),
+        statusCode: r.statusCode,
+        statusName: r.statusName,
+        scope: r.scope,
+        ...splitDueAt(r.dueAt),
+        acceptedByName: acceptor
+          ? [acceptor.firstName, acceptor.lastName].filter(Boolean).join(' ')
+          : null,
+        acceptedByPhone: acceptor?.phoneNumber ?? null,
+        canCancel: canManage && Number(r.statusId) === Number(JobStatusId.NEW),
+      };
+    });
+  }
+
+  /** ฝั่งงานย่อย: งานแม่ + ผู้มอบหมาย + หมายเหตุตอนมอบหมาย (จากประวัติ 'created' ของงานย่อย) */
+  private async getSubJobOrigin(job: Job): Promise<SubJobOrigin | null> {
+    if (job.parentJobId === null) return null;
+    const [parent, created] = await Promise.all([
+      this.jobs.findOne({
+        where: { id: job.parentJobId },
+        select: { id: true, jobCode: true, opsJobCode: true, venderCode: true },
+      }),
+      this.jobs.manager.findOne(JobLog, {
+        where: { jobId: job.id, action: JobLogAction.CREATED },
+        order: { id: 'ASC' },
+      }),
+    ]);
+    if (!parent) return null;
+    const [names, assigner] = await Promise.all([
+      this.venderService.getNames([parent.venderCode]),
+      created?.actorId
+        ? this.jobs.manager.findOne(User, { where: { id: created.actorId } })
+        : Promise.resolve(null),
+    ]);
+    return {
+      parentJobId: String(parent.id),
+      parentJobCode: parent.jobCode,
+      parentOpsJobCode: parent.opsJobCode,
+      parentVenderName: names.get(parent.venderCode) ?? null,
+      assignedByName: assigner
+        ? [assigner.firstName, assigner.lastName].filter(Boolean).join(' ')
+        : null,
+      ...splitDueAt(job.dueAt),
+      note: created?.note ?? null,
     };
   }
 
@@ -655,6 +849,7 @@ export class JobService {
         ]),
       user,
       venderCode,
+      Number(user.roleId) === Number(RoleId.ADMIN),
     )
       .andWhere('j.id = :id', { id })
       .limit(1)

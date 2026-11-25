@@ -38,8 +38,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${plexThai.variable} ${kanit.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-muted/40">
-        {/* ออกแบบสำหรับมือถือเท่านั้น: จำกัดความกว้างเท่าจอโทรศัพท์ */}
-        <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-background shadow-sm">
+        {/* ออกแบบสำหรับมือถือ: โทรศัพท์ (กว้าง < 480px เช่น iPhone 16 Pro Max = 440px) เต็มจอ
+            จอที่กว้างกว่านั้น (iPad/คอม) จำกัดความกว้างไว้ที่ 430px กลางจอ */}
+        <div className="mx-auto flex min-h-dvh w-full max-w-none flex-col bg-background shadow-sm min-[480px]:max-w-[430px]">
           {children}
           <Toaster position="top-center" />
         </div>

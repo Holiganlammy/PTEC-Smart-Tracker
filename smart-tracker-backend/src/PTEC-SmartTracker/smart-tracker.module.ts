@@ -22,6 +22,7 @@ import { User } from './model/user.model';
 import { JobAttatchService } from './service/job-attatch.service';
 import { JobMessageService } from './service/job-message.service';
 import { JobService } from './service/job.service';
+import { JobSubService } from './service/job-sub.service';
 import { LineAuthService } from './service/line-auth.service';
 import { UserService } from './service/user.service';
 import { VenderService } from './service/vender.service';
@@ -61,6 +62,7 @@ import { VenderService } from './service/vender.service';
     UserService,
     VenderService,
     JobService,
+    JobSubService,
     JobAttatchService,
     JobMessageService,
   ],

@@ -76,6 +76,37 @@ export function canChangeStatus(user: Actor, o: JobOwnership): boolean {
   return o.statusId === STATUS_NEW || isJobOwner(user, o);
 }
 
+/** สถานะที่มอบหมายงานย่อยให้บริษัทอื่นได้ (รับงานแล้ว ยังไม่ส่งมอบ) */
+const SUB_JOB_STATUSES: number[] = [
+  JobStatusId.ACCEPTED,
+  JobStatusId.IN_PROGRESS,
+  JobStatusId.WAITING_PARTS,
+];
+
+/** role ที่มอบหมายงานย่อยได้ในฐานะเจ้าของงาน (ผู้รับเหมา/หัวหน้า — ผู้รับเหมาช่วงในบริษัทมอบต่อไม่ได้) */
+const SUB_JOB_DISPATCHERS: number[] = [
+  Number(RoleId.CONTRACTOR),
+  Number(RoleId.HEAD),
+];
+
+/**
+ * เพิ่ม/ยกเลิกงานย่อยของงานนี้ได้ไหม: ขณะที่งานรับแล้วและยังไม่ส่งมอบ
+ *  - ผู้รับเหมา/หัวหน้า: ต้องเป็นเจ้าของงาน
+ *  - แอดมิน: ทุกใบงานของทุกบริษัท ไม่ต้องเป็นเจ้าของงาน
+ * งานย่อยเองมอบต่ออีกทอดไม่ได้ (ให้มีชั้นเดียวตาม Figma)
+ */
+export function canAddSubJob(
+  user: Actor,
+  o: JobOwnership,
+  isSubJob: boolean,
+): boolean {
+  if (isSubJob) return false;
+  if (!SUB_JOB_STATUSES.includes(o.statusId)) return false;
+  if (Number(user.roleId) === Number(RoleId.ADMIN)) return true;
+  if (!SUB_JOB_DISPATCHERS.includes(Number(user.roleId))) return false;
+  return isJobOwner(user, o);
+}
+
 /** เหตุที่พิมพ์แชทไม่ได้ (UI แปลงเป็นข้อความไทยเอง) */
 export type ChatBlockReason =
   'closed' | 'rejected' | 'no_owner_yet' | 'not_owner';

@@ -33,7 +33,11 @@ export class VenderService {
     });
   }
 
-  /** map รหัสบริษัท → ชื่อบริษัท (ใช้แสดงในรายการผู้ใช้ของแอดมิน) */
+  /**
+   * map รหัสบริษัท → ชื่อบริษัท (ใช้แสดงในรายการผู้ใช้ของแอดมิน และหัวข้อบริษัทในทุกหน้า)
+   * ใช้ FULL JOIN เพราะรหัสบางตัวมีแค่ใน Vendor ไม่มีใน Supplier (เช่น รหัสทดสอบ V999999999)
+   * ถ้าเริ่มจาก Supplier อย่างเดียวจะไม่เจอชื่อ แล้วหน้าเว็บจะโชว์เป็นรหัสแทน
+   */
   async getNames(codes: string[]): Promise<Map<string, string>> {
     const unique = [...new Set(codes.filter(Boolean))];
     const names = new Map<string, string>();
@@ -46,12 +50,15 @@ export class VenderService {
         COALESCE(v.Vendor_Code, s.Code, '')    AS venderCode,
         COALESCE(v.Vendor_Name, s.Company, '') AS venderName
       FROM dbo.Supplier s
-      LEFT JOIN dbo.Vendor v ON s.Code = v.Vendor_Code
+      FULL OUTER JOIN dbo.Vendor v ON s.Code = v.Vendor_Code
       WHERE COALESCE(v.Vendor_Code, s.Code, '') IN (${placeholders})
       `,
       unique,
     );
-    for (const r of rows) names.set(r.venderCode, r.venderName);
+    for (const r of rows) {
+      // รหัสเดียวกันอาจมีหลายแถว — เก็บแถวที่มีชื่อ ไม่ให้แถวชื่อว่างทับ
+      if (r.venderName || !names.has(r.venderCode)) names.set(r.venderCode, r.venderName);
+    }
     return names;
   }
 

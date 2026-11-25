@@ -10,7 +10,9 @@ import { useSidebar } from "@/components/ui/sidebar";
  */
 export function PortalHeader({ title, menu = false }: { title: string; menu?: boolean }) {
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 bg-neutral-900 px-4 py-3 text-white">
+    // -top-px + pt เพิ่ม 1px: ดันขอบบนของ header ออกนอกจอ 1px ตอน sticky กันเส้นขาว/เนื้อหาโผล่เหนือ header
+    // เวลาเลื่อน บนจอที่ scale เป็นเลขไม่ลงตัว (เช่น Windows 125%, devtools ซูม) ซึ่งทำให้ดูกะพริบ/ไม่ชิดขอบบน
+    <header className="sticky -top-px z-30 flex items-center gap-3 bg-neutral-900 px-4 pt-[calc(--spacing(3)+1px)] pb-3 text-white">
       {menu && <MenuToggle />}
       <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
         <WrenchIcon className="size-5" />

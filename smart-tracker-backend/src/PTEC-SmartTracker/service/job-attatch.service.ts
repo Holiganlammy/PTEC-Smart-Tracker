@@ -146,8 +146,9 @@ export class JobAttatchService {
       .where('a.jobId = :jobId', { jobId: job.id })
       .andWhere('a.deletedAt IS NULL')
       // รูปของงานที่ถูกย้ายมา: บริษัทเห็นเฉพาะรูปจาก OPS และรูปที่คนในบริษัทตัวเองอัปโหลด (แอดมินเห็นทั้งหมด)
+      // รูปขั้น "แจ้งงาน" (report) เห็นได้ทุกคน — ของงานย่อยคือรูปประกอบที่ผู้รับเหมาหลักแนบตอนมอบหมาย
       .andWhere(
-        "(:unscoped = 1 OR a.source = 'ops' OR a.uploadedBy IS NULL OR u.venderCode = :vender)",
+        "(:unscoped = 1 OR a.source = 'ops' OR a.kind = 'report' OR a.uploadedBy IS NULL OR u.venderCode = :vender)",
         {
           unscoped: this.isUnscoped(user, job) ? 1 : 0,
           vender: job.venderCode ?? '',

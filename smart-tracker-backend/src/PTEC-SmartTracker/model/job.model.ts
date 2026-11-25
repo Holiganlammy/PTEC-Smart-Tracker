@@ -166,6 +166,17 @@ export class Job {
   })
   repairDetails!: string | null;
 
+  /** งานย่อย: งานแม่ที่ผู้รับเหมาหลักมอบหมายต่อมาให้บริษัทนี้ (null = งานปกติ) — ต้องรัน docs/sql/10 */
+  @Column({ name: 'parent_job_id', type: 'bigint', nullable: true })
+  parentJobId!: string | null;
+
+  /**
+   * กำหนดเสร็จของงานย่อย (วันที่+เวลา เวลาท้องถิ่นไม่มี timezone เหมือนคอลัมน์เวลาอื่น) — ต้องรัน docs/sql/12
+   * คอลัมน์เก่า due_date / due_time (docs/sql/10, 11) เลิกใช้แล้ว ไม่ map ไว้
+   */
+  @Column({ name: 'due_at', type: 'datetime2', precision: 0, nullable: true })
+  dueAt!: Date | null;
+
   @Column({
     name: 'created_at',
     type: 'datetime2',

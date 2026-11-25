@@ -12,7 +12,10 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import {
+  FileFieldsInterceptor,
+  FilesInterceptor,
+} from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../guard/jwt-auth.guard';
 import { Roles, RolesGuard } from '../guard/roles.guard';
 import { AssignJobDto } from '../dto/job-assign.dto';
@@ -20,10 +23,15 @@ import { ReassignJobDto } from '../dto/job-reassign.dto';
 import { ReturnJobDto, UpdateJobDto } from '../dto/job-review.dto';
 import { ListJobsQuery } from '../dto/job-query.dto';
 import { ChangeJobStatusDto } from '../dto/job-status.dto';
-import { MAX_FILE_BYTES } from '../service/job-attatch.service';
+import { CreateSubJobDto } from '../dto/job-sub.dto';
+import {
+  MAX_FILE_BYTES,
+  MAX_FILES_PER_REQUEST,
+} from '../service/job-attatch.service';
 import type { UploadedFileLike } from '../type/job-attatch.type';
 import { RoleId } from '../model/role.model';
 import { JobService } from '../service/job.service';
+import { JobSubService } from '../service/job-sub.service';
 import type { AuthedRequest } from '../type/auth.type';
 
 /** endpoint ทั้งหมดที่เกี่ยวกับงาน — /jobs/... */
@@ -31,7 +39,10 @@ import type { AuthedRequest } from '../type/auth.type';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(RoleId.CONTRACTOR, RoleId.HEAD, RoleId.SUB_CONTRACTOR, RoleId.ADMIN)
 export class JobController {
-  constructor(private readonly jobService: JobService) {}
+  constructor(
+    private readonly jobService: JobService,
+    private readonly jobSubService: JobSubService,
+  ) {}
 
   /** GET /jobs — งานของบริษัทผู้รับเหมาที่ผู้ใช้สังกัด */
   @Get()
@@ -88,6 +99,48 @@ export class JobController {
       String(id),
       dto,
       upload ?? {},
+    );
+  }
+
+  // ───────── งานย่อย: ผู้รับเหมาหลักมอบหมายงานต่อให้บริษัทรายย่อย ─────────
+
+  /**
+   * POST /jobs/:id/subjobs (multipart) { venderCode, scope, dueDate, note?, files[] }
+   * มอบหมายงานย่อยให้บริษัทอื่น — คืนรายละเอียดงานแม่ล่าสุด
+   */
+  @Roles(RoleId.CONTRACTOR, RoleId.HEAD, RoleId.ADMIN)
+  @Post(':id/subjobs')
+  @UseInterceptors(
+    FilesInterceptor('files', MAX_FILES_PER_REQUEST, {
+      limits: { fileSize: MAX_FILE_BYTES },
+    }),
+  )
+  addSubJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateSubJobDto,
+    @UploadedFiles() files: UploadedFileLike[],
+    @Req() req: AuthedRequest,
+  ) {
+    return this.jobSubService.create(
+      req.currentUser!,
+      String(id),
+      dto,
+      files ?? [],
+    );
+  }
+
+  /** PATCH /jobs/:id/subjobs/:subId/cancel — ยกเลิกงานย่อยที่ยังไม่มีใครรับ */
+  @Roles(RoleId.CONTRACTOR, RoleId.HEAD, RoleId.ADMIN)
+  @Patch(':id/subjobs/:subId/cancel')
+  cancelSubJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('subId', ParseIntPipe) subId: number,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.jobSubService.cancel(
+      req.currentUser!,
+      String(id),
+      String(subId),
     );
   }
 
